@@ -13,6 +13,7 @@ from typing import Union
 import sys
 import shutil
 import argparse
+import re
 import traceback
 import logging
 import logging.config
@@ -22,6 +23,7 @@ from bcml.install import open_mod, find_modded_files
 from bcml.dev import convert_mod, NO_CONVERT_EXTS
 from bcml import util
 from .bars_py import bars, bcf_converter
+from .bflyt import convert_bflyt
 from .bflim_convertor import bntx_dds_injector as bntx
 import oead
 
@@ -37,7 +39,7 @@ from BfresLibrary import ResFile
 from BfresLibrary.PlatformConverters import ConverterHandle
 
 # Supported formats
-SUPPORTED = [".sbfres", ".sbitemico", ".hkcl", ".hkrg", ".shknm2", ".bars", ".bfstm", ".bflim", ".sblarc", ".bcamanim"]
+SUPPORTED = [".sbfres", ".sbitemico", ".hkcl", ".hkrg", ".shknm2", ".bars", ".bfstm", ".bflim", ".bflyt", ".sblarc", ".bcamanim"]
 
 BFRES_EXT = [".sbfres", ".sbitemico", ".bcamanim"]
 HAVOK_EXT = [".hkcl", ".hkrg", ".shknm2"]
@@ -224,6 +226,25 @@ def convert_bflim(sblarc: Path, pack_name: str) -> None:
         # Remove the temporary folder
         shutil.rmtree(blarc_path)
 
+def convert_bflyt_sblarc(sblarc: Path) -> None:
+    # Convert bflyt files inside a WiiU sblarc
+    blarc = oead.Sarc(util.unyaz_if_needed(sblarc.read_bytes()))
+    blarc_path = SCRIPT / sblarc.name
+
+    if any("bflyt" in i.name for i in blarc.get_files()):
+        extract_sarc(blarc, blarc_path)
+        try:
+            for bflyt in blarc_path.rglob('*.bflyt'):
+                try:
+                    convert_bflyt(bflyt)
+                except Exception as err:
+                    logging.warning(f"{bflyt.relative_to(blarc_path)} could not be converted")
+                    logging.debug(err, exc_info=True)
+
+            write_sarc(blarc, blarc_path, sblarc)
+        finally:
+            shutil.rmtree(blarc_path)
+
 def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> None:
     if file.suffix in BFRES_EXT:
         # Convert FRES files
@@ -266,6 +287,11 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
         file.write_bytes(bytes(new_bfstm))
         print("Successfully converted " + file.name + "!")
 
+    elif file.suffix == ".bflyt":
+        # Convert layout files
+        convert_bflyt(file)
+        print("Successfully converted " + file.name + "!")
+
     elif "pack" in file.suffix and file.suffix != ".sbquestpack":
         # Convert files inside of pack files
         pack = oead.Sarc(util.unyaz_if_needed(file.read_bytes()))
@@ -292,6 +318,8 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
         else:
             # Convert bflim files inside of sblarc files
             convert_bflim(file, mod_path.name)
+            # Convert bflyt files inside of sblarc files
+            convert_bflyt_sblarc(file)
 
     elif file.suffix in HAVOK_EXT:
         # Convert havok files
@@ -401,7 +429,16 @@ def convert(mod: Path) -> None:
 def main() -> None:
 
     if len(args.bnp) == 1: # one argument
-        mods = glob(args.bnp[0])
+        arg_path = Path(args.bnp[0])
+        if arg_path.exists():
+            mods = [str(arg_path)]
+        else:
+            try:
+                mods = glob(args.bnp[0])
+            except re.error:
+                mods = []
+            if not mods:
+                raise FileNotFoundError(f"Could not find BNP file: {args.bnp[0]}")
     else: # more than one argument
     	mods = args.bnp
     
@@ -410,3 +447,7 @@ def main() -> None:
 
     if ERROR_LOG.stat().st_size != 0:
         print(f"It seems some files could not be converted. Please check the error log at {ERROR_LOG} for more info.")
+
+
+if __name__ == "__main__":
+    main()

@@ -27,6 +27,7 @@ BCML's converter is still limited, so using other tools to convert those files t
 - `.shknm2`
 - `.bflim`*
 - `.bcamanim`**
+- `.bflyt`
 
 \*For bflim files, only files that replace the original ones can be converted, not completely new ones.  
 
