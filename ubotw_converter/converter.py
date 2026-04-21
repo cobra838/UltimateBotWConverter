@@ -107,6 +107,13 @@ def write_sarc(sarc: oead.Sarc, sarc_path: Path, sarc_file: Path) -> None:
         sarc_file.write_bytes(oead.yaz0.compress(new_sarc.write()[1]))
 
 def _get_stock_bfres(file: Path, mod_path: Optional[Path], switch_name: str) -> Optional[ResFile]:
+    stock_bytes = _get_stock_bfres_bytes(file, mod_path, switch_name)
+    if stock_bytes is None:
+        return None
+    return ResFile(MemoryStream(stock_bytes))
+
+
+def _get_stock_bfres_bytes(file: Path, mod_path: Optional[Path], switch_name: str) -> Optional[bytes]:
     if not mod_path:
         return None
 
@@ -116,7 +123,7 @@ def _get_stock_bfres(file: Path, mod_path: Optional[Path], switch_name: str) -> 
             rel = file.relative_to(base).with_name(switch_name)
             try:
                 stock_file = util.get_game_file(rel.as_posix())
-                return ResFile(MemoryStream(util.unyaz_if_needed(stock_file.read_bytes())))
+                return util.unyaz_if_needed(stock_file.read_bytes())
             except FileNotFoundError:
                 return None
     return None
@@ -137,25 +144,71 @@ def _apply_switch_tex_template(template: ResFile, converted: ResFile, name: str)
     return template
 
 
-def _patch_switch_bfres_bytes(data: bytes, res_file: ResFile) -> bytes:
+def _find_section_offsets(data: bytes, magic: bytes) -> list[int]:
+    offsets = []
+    start = 0
+    while True:
+        index = data.find(magic, start)
+        if index == -1:
+            break
+        offsets.append(index)
+        start = index + 4
+    return offsets
+
+
+def _repair_switch_visibility_bytes(data: bytearray, stock_bytes: Optional[bytes]) -> None:
+    if not stock_bytes:
+        return
+
+    stock_offsets = _find_section_offsets(stock_bytes, b"FBVS")
+    if not stock_offsets:
+        return
+
+    output_offsets = _find_section_offsets(data, b"FVIS")
+    if not output_offsets:
+        output_offsets = _find_section_offsets(data, b"FBVS")
+    if not output_offsets:
+        return
+
+    for stock_offset, output_offset in zip(stock_offsets, output_offsets):
+        block_ptr = int.from_bytes(stock_bytes[stock_offset + 0x38 : stock_offset + 0x40], "little")
+        if not block_ptr or block_ptr + 0x20 > len(stock_bytes):
+            continue
+
+        block = stock_bytes[block_ptr : block_ptr + 0x20]
+        new_offset = (len(data) + 7) & ~7
+        if new_offset > len(data):
+            data.extend(b"\x00" * (new_offset - len(data)))
+        data.extend(block)
+
+        data[output_offset + 0x38 : output_offset + 0x40] = new_offset.to_bytes(8, "little")
+        data[output_offset + 0x48 : output_offset + 0x50] = (new_offset + 8).to_bytes(8, "little")
+        data[output_offset + 0x60 : output_offset + 0x68] = stock_bytes[stock_offset + 0x60 : stock_offset + 0x68]
+
+
+def _patch_switch_bfres_bytes(data: bytes, res_file: ResFile, stock_bytes: Optional[bytes] = None) -> bytes:
     try:
         bone_vis_count = len(list(res_file.BoneVisibilityAnims.Values))
     except Exception:
         bone_vis_count = 0
 
-    if not bone_vis_count or b"FVIS" not in data:
+    if not bone_vis_count:
         return data
 
     patched = bytearray(data)
-    start = 0
-    replaced = 0
-    while replaced < bone_vis_count:
-        index = patched.find(b"FVIS", start)
-        if index == -1:
-            break
-        patched[index : index + 4] = b"FBVS"
-        replaced += 1
-        start = index + 4
+
+    _repair_switch_visibility_bytes(patched, stock_bytes)
+
+    if b"FVIS" in patched:
+        start = 0
+        replaced = 0
+        while replaced < bone_vis_count:
+            index = patched.find(b"FVIS", start)
+            if index == -1:
+                break
+            patched[index : index + 4] = b"FBVS"
+            replaced += 1
+            start = index + 4
     return bytes(patched)
 
 
@@ -185,9 +238,10 @@ def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None) -> None:
         res_file.ChangePlatform(True, 4096, 0, 5, 0, 3, ConverterHandle.BOTW)
         res_file.Alignment = 0x08 if sbfres.suffix == ".bcamanim" else 0x0C
         output_res_file = res_file
+        stock_bytes = _get_stock_bfres_bytes(sbfres, mod_path, f"{name}{ext}")
 
         if ".Tex1" in sbfres.suffixes:
-            stock_tex = _get_stock_bfres(sbfres, mod_path, f"{name}{ext}")
+            stock_tex = ResFile(MemoryStream(stock_bytes)) if stock_bytes else None
             templated = _apply_switch_tex_template(stock_tex, res_file, name) if stock_tex else None
             if templated:
                 output_res_file = templated
@@ -195,12 +249,12 @@ def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None) -> None:
         if sbfres.suffix.startswith(".s"):
             mem = MemoryStream()
             output_res_file.Save(mem)
-            saved_bytes = _patch_switch_bfres_bytes(bytes(mem.ToArray()), output_res_file)
+            saved_bytes = _patch_switch_bfres_bytes(bytes(mem.ToArray()), output_res_file, stock_bytes)
             sbfres.write_bytes(oead.yaz0.compress(saved_bytes))
         else:
             mem = MemoryStream()
             output_res_file.Save(mem)
-            sbfres.write_bytes(_patch_switch_bfres_bytes(bytes(mem.ToArray()), output_res_file))
+            sbfres.write_bytes(_patch_switch_bfres_bytes(bytes(mem.ToArray()), output_res_file, stock_bytes))
         
         if ".Tex1" in sbfres.suffixes:
             tex2.unlink()
