@@ -131,13 +131,7 @@ def _apply_switch_tex_template(template: ResFile, converted: ResFile, name: str)
     for texture_name in template_names:
         target = template.Textures[texture_name]
         source = converted.Textures[texture_name]
-        target.Width = source.Width
-        target.Height = source.Height
-        target.Depth = source.Depth
-        target.ArrayLength = source.ArrayLength
-        target.MipCount = source.MipCount
-        target.Format = source.Format
-        target.Texture = source.Texture
+        target.FromWiiU(source)
 
     template.Name = name
     return template
