@@ -9,7 +9,7 @@ from platform import system
 from json import loads
 from pathlib import Path
 from multiprocessing import get_context
-from typing import Union
+from typing import Optional, Union
 import sys
 import shutil
 import argparse
@@ -106,7 +106,66 @@ def write_sarc(sarc: oead.Sarc, sarc_path: Path, sarc_file: Path) -> None:
     else:
         sarc_file.write_bytes(oead.yaz0.compress(new_sarc.write()[1]))
 
-def convert_bfres(sbfres: Path) -> None:
+def _get_stock_bfres(file: Path, mod_path: Optional[Path], switch_name: str) -> Optional[ResFile]:
+    if not mod_path:
+        return None
+
+    for root in ("content", "aoc"):
+        base = mod_path / root
+        if base in file.parents:
+            rel = file.relative_to(base).with_name(switch_name)
+            try:
+                stock_file = util.get_game_file(rel.as_posix())
+                return ResFile(MemoryStream(util.unyaz_if_needed(stock_file.read_bytes())))
+            except FileNotFoundError:
+                return None
+    return None
+
+
+def _apply_switch_tex_template(template: ResFile, converted: ResFile, name: str) -> Optional[ResFile]:
+    template_names = [texture.Name for texture in list(template.Textures.Values)]
+    converted_names = {texture.Name for texture in list(converted.Textures.Values)}
+    if set(template_names) != converted_names:
+        return None
+
+    for texture_name in template_names:
+        target = template.Textures[texture_name]
+        source = converted.Textures[texture_name]
+        target.Width = source.Width
+        target.Height = source.Height
+        target.Depth = source.Depth
+        target.ArrayLength = source.ArrayLength
+        target.MipCount = source.MipCount
+        target.Format = source.Format
+        target.Texture = source.Texture
+
+    template.Name = name
+    return template
+
+
+def _patch_switch_bfres_bytes(data: bytes, res_file: ResFile) -> bytes:
+    try:
+        bone_vis_count = len(list(res_file.BoneVisibilityAnims.Values))
+    except Exception:
+        bone_vis_count = 0
+
+    if not bone_vis_count or b"FVIS" not in data:
+        return data
+
+    patched = bytearray(data)
+    start = 0
+    replaced = 0
+    while replaced < bone_vis_count:
+        index = patched.find(b"FVIS", start)
+        if index == -1:
+            break
+        patched[index : index + 4] = b"FBVS"
+        replaced += 1
+        start = index + 4
+    return bytes(patched)
+
+
+def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None) -> None:
     # Based on https://github.com/KillzXGaming/BfresPlatformConverter
     name: str = sbfres.stem
     ext: str = sbfres.suffix
@@ -131,13 +190,23 @@ def convert_bfres(sbfres: Path) -> None:
     if not res_file.IsPlatformSwitch:
         res_file.ChangePlatform(True, 4096, 0, 5, 0, 3, ConverterHandle.BOTW)
         res_file.Alignment = 0x08 if sbfres.suffix == ".bcamanim" else 0x0C
+        output_res_file = res_file
+
+        if ".Tex1" in sbfres.suffixes:
+            stock_tex = _get_stock_bfres(sbfres, mod_path, f"{name}{ext}")
+            templated = _apply_switch_tex_template(stock_tex, res_file, name) if stock_tex else None
+            if templated:
+                output_res_file = templated
 
         if sbfres.suffix.startswith(".s"):
             mem = MemoryStream()
-            res_file.Save(mem)
-            sbfres.write_bytes(oead.yaz0.compress(bytes(mem.ToArray())))
+            output_res_file.Save(mem)
+            saved_bytes = _patch_switch_bfres_bytes(bytes(mem.ToArray()), output_res_file)
+            sbfres.write_bytes(oead.yaz0.compress(saved_bytes))
         else:
-            res_file.Save(str(sbfres))
+            mem = MemoryStream()
+            output_res_file.Save(mem)
+            sbfres.write_bytes(_patch_switch_bfres_bytes(bytes(mem.ToArray()), output_res_file))
         
         if ".Tex1" in sbfres.suffixes:
             tex2.unlink()
@@ -249,7 +318,7 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
     if file.suffix in BFRES_EXT:
         # Convert FRES files
         if ".Tex2" not in file.suffixes:
-            convert_bfres(file)
+            convert_bfres(file, mod_path)
 
     elif file.suffix == ".bars":
         # Convert bars files
@@ -326,44 +395,56 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
         convert_havok(file)
 
 def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
+    if not file.exists() or file.stat().st_size == 0:
+        return
+
+    if file.suffix in BFRES_EXT:
+        try:
+            if ".Tex2" in file.suffixes:
+                return
+            change_platform(file, mod_path, root_mod_path)
+        except Exception as err:
+            logger.warning(f"{file.relative_to(mod_path)} could not be converted")
+            logger.debug(err, exc_info=True)
+        return
+
     try:
         canon = util.get_canon_name(file.relative_to(mod_path), allow_no_source=True)
         is_modded = is_file_modded(canon, file.read_bytes())
 
         # Convert supported files
-        if file.exists() and file.stat().st_size != 0:
-            if is_modded: 
-                change_platform(file, mod_path, root_mod_path)
-                
-            elif file.suffix in NO_CONVERT_EXTS or file.suffix == ".bcamanim":
-                if mod_path.parent != SCRIPT:
-                    stock_file = util.get_game_file(file.relative_to(mod_path / "content"))
-                    file.write_bytes(stock_file.read_bytes())
-                # TODO: Add logic for stock files inside modified packs
-                elif "pack" in mod_path.suffix and mod_path.suffix != ".sbquestpack":
+        if is_modded: 
+            change_platform(file, mod_path, root_mod_path)
+            
+        elif file.suffix in NO_CONVERT_EXTS or file.suffix == ".bcamanim":
+            if mod_path.parent != SCRIPT:
+                stock_file = util.get_game_file(file.relative_to(mod_path / "content"))
+                file.write_bytes(stock_file.read_bytes())
+            # TODO: Add logic for stock files inside modified packs
+            elif "pack" in mod_path.suffix and mod_path.suffix != ".sbquestpack":
+                try:
+                    stock_pack = util.get_game_file(f"Actor/Pack/{mod_path.name}")
+                except FileNotFoundError:
                     try:
-                        stock_pack = util.get_game_file(f"Actor/Pack/{mod_path.name}")
+                        stock_pack = util.get_game_file(f"Event/{mod_path.name}")
                     except FileNotFoundError:
                         try:
-                            stock_pack = util.get_game_file(f"Event/{mod_path.name}")
+                            stock_pack = util.get_game_file(f"Pack/{mod_path.name}")
                         except FileNotFoundError:
                             try:
-                                stock_pack = util.get_game_file(f"Pack/{mod_path.name}")
+                                stock_pack = util.get_game_file(f"Actor/Pack/{file.name.split('.')[0].replace('_A', '')}.sbactorpack")
                             except FileNotFoundError:
                                 try:
-                                    stock_pack = util.get_game_file(f"Actor/Pack/{file.name.split('.')[0].replace('_A', '')}.sbactorpack")
+                                    stock_pack = util.get_game_file(f"Event/{file.name.split('.')[0].replace('Event_', '').replace('_Open', '_0')}.sbeventpack")
                                 except FileNotFoundError:
-                                    try:
-                                        stock_pack = util.get_game_file(f"Event/{file.name.split('.')[0].replace('Event_', '').replace('_Open', '_0')}.sbeventpack")
-                                    except FileNotFoundError:
-                                        change_platform(file, mod_path)
+                                    change_platform(file, mod_path)
 
-                    if 'stock_pack' in locals():
-                        try:
-                            stock_file = util.get_nested_file_bytes(f"{stock_pack}//{file.relative_to(mod_path).as_posix()}")
-                            file.write_bytes(stock_file)
-                        except:
-                            change_platform(file, mod_path)
+                if 'stock_pack' in locals():
+                    try:
+                        stock_file = util.get_nested_file_bytes(f"{stock_pack}//{file.relative_to(mod_path).as_posix()}")
+                        file.write_bytes(stock_file)
+                    except:
+                        change_platform(file, mod_path)
                 
     except Exception as err:
         logger.warning(f"{file.relative_to(mod_path)} could not be converted")
