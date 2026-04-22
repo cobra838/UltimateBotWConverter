@@ -366,7 +366,7 @@ def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None, root_mod_path: 
         res_file.Alignment = 0x08 if sbfres.suffix == ".bcamanim" else 0x0C
         output_res_file = res_file
 
-        if is_tex1 or standalone_tex2:
+        if standalone_tex2:
             stock_tex = ResFile(MemoryStream(stock_bytes)) if stock_bytes else None
             templated = _apply_switch_tex_template(stock_tex, res_file, name) if stock_tex else None
             if templated:
@@ -694,6 +694,7 @@ def convert(mod: Path) -> None:
         shutil.rmtree(mod_path, ignore_errors=True)
 
 def main() -> None:
+    ERROR_LOG.write_text("", encoding="utf-8")
 
     if len(args.bnp) == 1: # one argument
         arg_path = Path(args.bnp[0])
