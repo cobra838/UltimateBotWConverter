@@ -10,6 +10,7 @@ from json import loads
 from pathlib import Path
 from multiprocessing import get_context
 from typing import Optional, Union
+from hashlib import sha1
 import sys
 import shutil
 import argparse
@@ -89,17 +90,17 @@ def confirm_prompt(question: str) -> bool:
 
 def extract_sarc(sarc: oead.Sarc, sarc_path: Path) -> None:
     # Extract the data from a SARC file
-    Path(sarc_path).mkdir(exist_ok=True)
+    Path(sarc_path).mkdir(parents=True, exist_ok=True)
     for file in sarc.get_files():
         if not Path(sarc_path / file.name).parent.exists():
-            Path(sarc_path / file.name).parent.mkdir(parents=True)
+            Path(sarc_path / file.name).parent.mkdir(parents=True, exist_ok=True)
         Path(sarc_path / file.name).write_bytes(file.data)
 
 def write_sarc(sarc: oead.Sarc, sarc_path: Path, sarc_file: Path) -> None:
     # Overwrite the SARC file with the modified files
     new_sarc = oead.SarcWriter(endian=oead.Endianness.Little)
     for file in sarc_path.rglob("*.*"):
-        new_file = f'{file}'.split(f"{sarc_file.name}{sep}")[1].replace("\\", "/")
+        new_file = file.relative_to(sarc_path).as_posix()
         new_sarc.files[new_file] = file.read_bytes()
     if sarc_file.suffix == ".pack":
         sarc_file.write_bytes(new_sarc.write()[1])
@@ -165,6 +166,12 @@ def _find_external_tex1(file: Path, root_mod_path: Optional[Path]) -> Optional[P
         candidate = root_mod_path / root / "Model" / tex1_name
         if candidate.exists():
             return candidate
+
+    # Some mods keep matching Tex1 files inside option subfolders instead of
+    # directly under the mod root content/Model path.
+    for candidate in root_mod_path.rglob(tex1_name):
+        if "Model" in candidate.parts and any(part in ("content", "aoc") for part in candidate.parts):
+            return candidate
     return None
 
 
@@ -183,6 +190,50 @@ def _merge_external_tex1_with_tex2(tex1_path: Path, tex2_res_file: ResFile, name
 
     tex1_res_file.Name = name
     return tex1_res_file
+
+
+def _trim_texture_to_base_mip(texture) -> None:
+    texture.MipCount = 1
+    texture.MipData = b""
+    texture.MipOffsets = [0] * len(list(texture.MipOffsets))
+
+
+def _collapse_embedded_mips(res_file: ResFile) -> bool:
+    collapsed = False
+    for texture in list(res_file.Textures.Values):
+        if int(texture.MipCount) <= 1 or len(bytes(texture.MipData)) != 0:
+            continue
+        _trim_texture_to_base_mip(texture)
+        collapsed = True
+    return collapsed
+
+
+def _sanitize_invalid_mips(res_file: ResFile) -> bool:
+    sanitized = False
+    for texture in list(res_file.Textures.Values):
+        bad_mip = None
+        for mip in range(int(texture.MipCount)):
+            try:
+                texture.GetDeswizzledData(0, mip)
+            except Exception:
+                bad_mip = mip
+                break
+
+        if bad_mip is None:
+            continue
+        if bad_mip <= 0:
+            raise ValueError(f"Texture {texture.Name} has invalid base mip data")
+
+        texture.MipCount = bad_mip
+        texture.MipData = b""
+        texture.MipOffsets = [0] * len(list(texture.MipOffsets))
+        sanitized = True
+    return sanitized
+
+
+def _get_temp_extract_path(file: Path) -> Path:
+    digest = sha1(str(file).encode("utf-8")).hexdigest()[:12]
+    return SCRIPT / "_tmp_extract" / digest / file.name
 
 
 def _find_section_offsets(data: bytes, magic: bytes) -> list[int]:
@@ -264,16 +315,19 @@ def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None, root_mod_path: 
     bfres: bytes = util.unyaz_if_needed(sbfres.read_bytes())
 
     res_file: ResFile = ResFile(MemoryStream(bfres))
+    tex2: Optional[Path] = None
 
     if is_tex1 and max({i.MipCount for i in list(res_file.Textures.Values)}) > 1:
-        tex2: Path = Path(str(sbfres).replace("Tex1", "Tex2"))
-        if not tex2.exists():
-            raise FileNotFoundError("Could not find Tex2 file for mipmap data.")
-
-        res_file_tex2 = ResFile(MemoryStream(util.unyaz_if_needed(tex2.read_bytes())))
-        for texture in list(res_file_tex2.Textures.Values):
-            res_file.Textures[texture.Name].MipSwizzle = texture.Swizzle
-            res_file.Textures[texture.Name].MipData = texture.MipData
+        tex2 = Path(str(sbfres).replace("Tex1", "Tex2"))
+        if tex2.exists():
+            res_file_tex2 = ResFile(MemoryStream(util.unyaz_if_needed(tex2.read_bytes())))
+            for texture in list(res_file_tex2.Textures.Values):
+                target = res_file.Textures[texture.Name]
+                target.MipSwizzle = texture.MipSwizzle
+                target.MipData = texture.MipData
+                target.MipOffsets = texture.MipOffsets
+        else:
+            _collapse_embedded_mips(res_file)
 
         name = name.replace("Tex1", "Tex")
         res_file.Name = name
@@ -303,7 +357,12 @@ def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None, root_mod_path: 
                 sbfres.rename(sbfres.with_name(f'{name}{ext}'))
                 return
 
-        res_file.ChangePlatform(True, 4096, 0, 5, 0, 3, ConverterHandle.BOTW)
+        try:
+            res_file.ChangePlatform(True, 4096, 0, 5, 0, 3, ConverterHandle.BOTW)
+        except Exception:
+            if not _sanitize_invalid_mips(res_file):
+                raise
+            res_file.ChangePlatform(True, 4096, 0, 5, 0, 3, ConverterHandle.BOTW)
         res_file.Alignment = 0x08 if sbfres.suffix == ".bcamanim" else 0x0C
         output_res_file = res_file
 
@@ -323,7 +382,7 @@ def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None, root_mod_path: 
             output_res_file.Save(mem)
             sbfres.write_bytes(_patch_switch_bfres_bytes(bytes(mem.ToArray()), output_res_file, stock_bytes))
         
-        if is_tex1:
+        if is_tex1 and tex2 and tex2.exists():
             tex2.unlink()
             
         if is_tex1 or standalone_tex2:
@@ -376,7 +435,7 @@ def get_stock_bfstp(bfstp_name: str, bars_file: Path):
 def convert_bflim(sblarc: Path, pack_name: str) -> None:
     # Convert bflim files inside a WiiU sblarc
     blarc = oead.Sarc(util.unyaz_if_needed(sblarc.read_bytes()))
-    blarc_path = SCRIPT / sblarc.name
+    blarc_path = _get_temp_extract_path(sblarc)
 
     if any("bflim" in i.name for i in blarc.get_files()):
         # Get the pack file where the sblarc comes from
@@ -414,7 +473,7 @@ def convert_bflim(sblarc: Path, pack_name: str) -> None:
 def convert_bflyt_sblarc(sblarc: Path) -> None:
     # Convert bflyt files inside a WiiU sblarc
     blarc = oead.Sarc(util.unyaz_if_needed(sblarc.read_bytes()))
-    blarc_path = SCRIPT / sblarc.name
+    blarc_path = _get_temp_extract_path(sblarc)
 
     if any("bflyt" in i.name for i in blarc.get_files()):
         extract_sarc(blarc, blarc_path)
@@ -480,7 +539,7 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
     elif "pack" in file.suffix and file.suffix != ".sbquestpack":
         # Convert files inside of pack files
         pack = oead.Sarc(util.unyaz_if_needed(file.read_bytes()))
-        pack_path = SCRIPT / file.name
+        pack_path = _get_temp_extract_path(file)
         if any(splitext(i.name)[1] in SUPPORTED for i in pack.get_files()):
             try:
                 extract_sarc(pack, pack_path)
@@ -533,8 +592,9 @@ def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
             change_platform(file, mod_path, root_mod_path)
             
         elif file.suffix in NO_CONVERT_EXTS or file.suffix == ".bcamanim":
-            if mod_path.parent != SCRIPT:
-                stock_file = util.get_game_file(file.relative_to(mod_path / "content"))
+            content_root = mod_path / "content"
+            if mod_path.parent != SCRIPT and content_root.exists() and file.is_relative_to(content_root):
+                stock_file = util.get_game_file(file.relative_to(content_root))
                 file.write_bytes(stock_file.read_bytes())
             # TODO: Add logic for stock files inside modified packs
             elif "pack" in mod_path.suffix and mod_path.suffix != ".sbquestpack":
@@ -576,21 +636,31 @@ def convert(mod: Path) -> None:
         if meta["platform"] == "switch":
             raise NotImplementedError("Ultimate BotW Converter does not support Switch to Wii U conversion")
 
-        files = []
+        pack_files = []
+        other_files = []
         for file in mod_path.rglob("*.*"):
             if "content" in file.parts or "aoc" in file.parts:
-                files.append((file, mod_path))
+                task = (file, mod_path, mod_path)
+                if "pack" in file.suffix or file.suffix == ".sblarc":
+                    pack_files.append(task)
+                else:
+                    other_files.append(task)
+
+        phases = [pack_files, other_files]
 
         # Convert supported files
         with util.TempSettingsContext({"wiiu": False}):
-            if not args.single:
-                with get_context("spawn").Pool(maxtasksperchild=500) as pool:
-                    pool.starmap(convert_files, files)
-                    pool.close()
-                    pool.join()
-            else:
-                for file,_ in files:
-                    convert_files(file, mod_path)
+            for files in phases:
+                if not files:
+                    continue
+                if not args.single:
+                    with get_context("spawn").Pool(maxtasksperchild=500) as pool:
+                        pool.starmap(convert_files, files)
+                        pool.close()
+                        pool.join()
+                else:
+                    for file, _, root_mod_path in files:
+                        convert_files(file, mod_path, root_mod_path)
         
         # Run the mod through BCML's automatic converter 
         warnings = convert_mod(mod_path, False, True)
