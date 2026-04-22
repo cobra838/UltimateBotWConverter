@@ -126,6 +126,18 @@ def _get_stock_bfres_bytes(file: Path, mod_path: Optional[Path], switch_name: st
                 return util.unyaz_if_needed(stock_file.read_bytes())
             except FileNotFoundError:
                 return None
+
+    pack_parent = next((parent for parent in file.parents if parent.suffix == ".pack"), None)
+    if pack_parent:
+        inner_rel = file.relative_to(pack_parent).with_name(switch_name).as_posix()
+        try:
+            stock_pack = util.get_game_file(f"Pack/{pack_parent.name}")
+            stock_sarc = oead.Sarc(util.unyaz_if_needed(stock_pack.read_bytes()))
+            stock_inner = stock_sarc.get_file(inner_rel)
+            if stock_inner:
+                return util.unyaz_if_needed(bytes(stock_inner.data))
+        except FileNotFoundError:
+            return None
     return None
 
 
@@ -142,6 +154,35 @@ def _apply_switch_tex_template(template: ResFile, converted: ResFile, name: str)
 
     template.Name = name
     return template
+
+
+def _find_external_tex1(file: Path, root_mod_path: Optional[Path]) -> Optional[Path]:
+    if not root_mod_path or ".Tex2" not in file.suffixes:
+        return None
+
+    tex1_name = file.name.replace("Tex2", "Tex1")
+    for root in ("content", "aoc"):
+        candidate = root_mod_path / root / "Model" / tex1_name
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _merge_external_tex1_with_tex2(tex1_path: Path, tex2_res_file: ResFile, name: str) -> Optional[ResFile]:
+    tex1_res_file = ResFile(MemoryStream(util.unyaz_if_needed(tex1_path.read_bytes())))
+    tex1_names = {texture.Name for texture in list(tex1_res_file.Textures.Values)}
+    tex2_names = {texture.Name for texture in list(tex2_res_file.Textures.Values)}
+    if tex1_names != tex2_names:
+        return None
+
+    for texture in list(tex2_res_file.Textures.Values):
+        target = tex1_res_file.Textures[texture.Name]
+        target.MipSwizzle = texture.MipSwizzle
+        target.MipData = texture.MipData
+        target.MipOffsets = texture.MipOffsets
+
+    tex1_res_file.Name = name
+    return tex1_res_file
 
 
 def _find_section_offsets(data: bytes, magic: bytes) -> list[int]:
@@ -212,16 +253,19 @@ def _patch_switch_bfres_bytes(data: bytes, res_file: ResFile, stock_bytes: Optio
     return bytes(patched)
 
 
-def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None) -> None:
+def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None, root_mod_path: Optional[Path] = None) -> None:
     # Based on https://github.com/KillzXGaming/BfresPlatformConverter
     name: str = sbfres.stem
     ext: str = sbfres.suffix
+    is_tex1 = ".Tex1" in sbfres.suffixes
+    is_tex2 = ".Tex2" in sbfres.suffixes
+    standalone_tex2 = is_tex2 and not Path(str(sbfres).replace("Tex2", "Tex1")).exists()
 
     bfres: bytes = util.unyaz_if_needed(sbfres.read_bytes())
 
     res_file: ResFile = ResFile(MemoryStream(bfres))
 
-    if ".Tex1" in sbfres.suffixes and max({i.MipCount for i in list(res_file.Textures.Values)}) > 1:
+    if is_tex1 and max({i.MipCount for i in list(res_file.Textures.Values)}) > 1:
         tex2: Path = Path(str(sbfres).replace("Tex1", "Tex2"))
         if not tex2.exists():
             raise FileNotFoundError("Could not find Tex2 file for mipmap data.")
@@ -233,14 +277,37 @@ def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None) -> None:
 
         name = name.replace("Tex1", "Tex")
         res_file.Name = name
+    elif standalone_tex2:
+        name = name.replace("Tex2", "Tex")
+        res_file.Name = name
+        external_tex1 = _find_external_tex1(sbfres, root_mod_path)
+        if external_tex1:
+            merged = _merge_external_tex1_with_tex2(external_tex1, res_file, name)
+            if merged:
+                res_file = merged
     
     if not res_file.IsPlatformSwitch:
+        stock_bytes = _get_stock_bfres_bytes(sbfres, mod_path, f"{name}{ext}")
+
+        if standalone_tex2 and stock_bytes:
+            stock_tex = ResFile(MemoryStream(stock_bytes))
+            templated = _apply_switch_tex_template(stock_tex, res_file, name)
+            if templated:
+                mem = MemoryStream()
+                templated.Save(mem)
+                saved_bytes = _patch_switch_bfres_bytes(bytes(mem.ToArray()), templated, stock_bytes)
+                if sbfres.suffix.startswith(".s"):
+                    sbfres.write_bytes(oead.yaz0.compress(saved_bytes))
+                else:
+                    sbfres.write_bytes(saved_bytes)
+                sbfres.rename(sbfres.with_name(f'{name}{ext}'))
+                return
+
         res_file.ChangePlatform(True, 4096, 0, 5, 0, 3, ConverterHandle.BOTW)
         res_file.Alignment = 0x08 if sbfres.suffix == ".bcamanim" else 0x0C
         output_res_file = res_file
-        stock_bytes = _get_stock_bfres_bytes(sbfres, mod_path, f"{name}{ext}")
 
-        if ".Tex1" in sbfres.suffixes:
+        if is_tex1 or standalone_tex2:
             stock_tex = ResFile(MemoryStream(stock_bytes)) if stock_bytes else None
             templated = _apply_switch_tex_template(stock_tex, res_file, name) if stock_tex else None
             if templated:
@@ -256,10 +323,11 @@ def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None) -> None:
             output_res_file.Save(mem)
             sbfres.write_bytes(_patch_switch_bfres_bytes(bytes(mem.ToArray()), output_res_file, stock_bytes))
         
-        if ".Tex1" in sbfres.suffixes:
+        if is_tex1:
             tex2.unlink()
             
-        sbfres.rename(sbfres.with_name(f'{name}{ext}'))
+        if is_tex1 or standalone_tex2:
+            sbfres.rename(sbfres.with_name(f'{name}{ext}'))
 
 def convert_havok(hkx: Path) -> None:
     # Convert havok files unsupported by BCML
@@ -365,8 +433,8 @@ def convert_bflyt_sblarc(sblarc: Path) -> None:
 def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> None:
     if file.suffix in BFRES_EXT:
         # Convert FRES files
-        if ".Tex2" not in file.suffixes:
-            convert_bfres(file, mod_path)
+        if ".Tex2" not in file.suffixes or not Path(str(file).replace("Tex2", "Tex1")).exists():
+            convert_bfres(file, mod_path, root_mod_path)
 
     elif file.suffix == ".bars":
         # Convert bars files
@@ -419,7 +487,7 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
                 new_files = pack_path.rglob('*.*')
                 for new in new_files:
                     try:
-                        convert_files(new, pack_path, mod_path)
+                        convert_files(new, pack_path, root_mod_path or mod_path)
                     except Exception as err:
                         logger.warning(f"{new.relative_to(pack_path)} could not be converted")
                         logger.debug(err, exc_info=True)
@@ -448,7 +516,7 @@ def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
 
     if file.suffix in BFRES_EXT:
         try:
-            if ".Tex2" in file.suffixes:
+            if ".Tex2" in file.suffixes and Path(str(file).replace("Tex2", "Tex1")).exists():
                 return
             change_platform(file, mod_path, root_mod_path)
         except Exception as err:
