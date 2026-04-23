@@ -62,6 +62,12 @@ ERROR_LOG = SCRIPT / "error.log"
 logging.config.fileConfig(fname=LOG_CONF, defaults={"logfilename": ERROR_LOG, "loglevel": args.log_level.upper()})
 logger = logging.getLogger(__name__)
 
+# BCML flags .sesetlist as unsupported, but the current pipeline already
+# produces correct Switch PTCL payloads for the tested BOTW cases. We still
+# need to restore the expected Yaz0 wrapper inside event packs without touching
+# unrelated payloads.
+NO_CONVERT_EXTS.discard(".sesetlist")
+
 def is_file_modded(name: str, file: Union[bytes, Path], count_new: bool = True) -> bool:
     table = util.get_hash_table(True)
     if name not in table:
@@ -106,6 +112,56 @@ def write_sarc(sarc: oead.Sarc, sarc_path: Path, sarc_file: Path) -> None:
         sarc_file.write_bytes(new_sarc.write()[1])
     else:
         sarc_file.write_bytes(oead.yaz0.compress(new_sarc.write()[1]))
+
+
+def _normalize_sesetlist_bytes(data: bytes) -> bytes:
+    if data[:4] == b"Yaz0":
+        return data
+    if data[:4] in {b"EFTB", b"VFXB"}:
+        return oead.yaz0.compress(data)
+    return data
+
+
+def _recompress_sesetlist_sarc_bytes(data: bytes, compress_outer: bool) -> bytes:
+    sarc = oead.Sarc(util.unyaz_if_needed(data))
+    writer = oead.SarcWriter.from_sarc(sarc)
+    changed = False
+
+    for file in sarc.get_files():
+        file_data = bytes(file.data)
+        ext = Path(file.name).suffix
+        if ext == ".sesetlist":
+            normalized = _normalize_sesetlist_bytes(file_data)
+            if normalized != file_data:
+                writer.files[file.name] = normalized
+                changed = True
+        elif ext in {".sbeventpack", ".beventpack", ".sarc", ".pack", ".sblarc"}:
+            nested_data = _recompress_sesetlist_sarc_bytes(
+                file_data, compress_outer=ext.startswith(".s") and ext != ".sarc"
+            )
+            if nested_data != file_data:
+                writer.files[file.name] = nested_data
+                changed = True
+
+    if not changed:
+        return data
+
+    out = writer.write()[1]
+    return oead.yaz0.compress(out) if compress_outer else out
+
+
+def _recompress_sesetlists_in_mod(mod_path: Path) -> None:
+    for file in mod_path.rglob("*.*"):
+        if not file.is_file():
+            continue
+        ext = file.suffix
+        if ext not in {".sbeventpack", ".beventpack"}:
+            continue
+        new_data = _recompress_sesetlist_sarc_bytes(
+            file.read_bytes(), compress_outer=ext.startswith(".s") and ext != ".sarc"
+        )
+        if new_data != file.read_bytes():
+            file.write_bytes(new_data)
 
 def _get_stock_bfres(file: Path, mod_path: Optional[Path], switch_name: str) -> Optional[ResFile]:
     stock_bytes = _get_stock_bfres_bytes(file, mod_path, switch_name)
@@ -664,6 +720,7 @@ def convert(mod: Path) -> None:
         
         # Run the mod through BCML's automatic converter 
         warnings = convert_mod(mod_path, False, True)
+        _recompress_sesetlists_in_mod(mod_path)
 
         # Pack the converted mod into a new bnp
         out = Path(f'{args.output}.bnp') if args.output else mod.with_name(f"{mod.stem}_switch.bnp")
