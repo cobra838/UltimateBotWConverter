@@ -3,6 +3,7 @@ A script combining various sources to convert BotW WiiU mods for the Switch vers
 
 ## Requirements
 - Python 3.7 or 3.8 (If on Windows, you must check `Add Python to PATH` during installation)
+- [.NET 5.0 Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/5.0/runtime) (required for the [HKX2 ReadWrite Havok converter](https://gitlab.com/HKX2))
 - A legal, unpacked dump of BoTW Switch (1.6.0)
 - [BotW Cross-Platform Mod Loader](https://github.com/NiceneNerd/BCML)
 
@@ -25,6 +26,7 @@ BCML's converter is still limited, so using other tools to convert those files t
 - `.hkcl`
 - `.hkrg`
 - `.shknm2`
+- `.shksc`
 - `.bflim`*
 - `.bcamanim`**
 - `.bflyt`
@@ -40,6 +42,7 @@ BCML's converter is still limited, so using other tools to convert those files t
 - [Aaaboy97](https://github.com/Aaaboy97) - Bars repacker script
 - [KillzXGaming](https://github.com/KillzXGaming) - BfresPlatformConverter, BfresLibrary
 - [krenyy](https://gitlab.com/krenyy) - HKXConvert
+- [HKX2](https://gitlab.com/HKX2) - HKX2Library, ReadWrite
 - [NiceneNerd](https://github.com/NiceneNerd) - BOTW Cross-Platform Mod Loader
 - [Leoetlino](https://github.com/leoetlino) - All his tools for working with BotW files
 - The creators of [Pythonnet](https://github.com/pythonnet)

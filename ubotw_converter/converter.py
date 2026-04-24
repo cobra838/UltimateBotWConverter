@@ -41,10 +41,10 @@ from BfresLibrary import ResFile
 from BfresLibrary.PlatformConverters import ConverterHandle
 
 # Supported formats
-SUPPORTED = [".sbfres", ".sbitemico", ".hkcl", ".hkrg", ".shknm2", ".bars", ".bfstm", ".bflim", ".bflyt", ".sblarc", ".bcamanim"]
+SUPPORTED = [".sbfres", ".sbitemico", ".hkcl", ".hkrg", ".shknm2", ".shksc", ".bars", ".bfstm", ".bflim", ".bflyt", ".sblarc", ".bcamanim"]
 
 BFRES_EXT = [".sbfres", ".sbitemico", ".bcamanim"]
-HAVOK_EXT = [".hkcl", ".hkrg", ".shknm2"]
+HAVOK_EXT = [".hkcl", ".hkrg", ".shknm2", ".shksc"]
 LAYOUT_EXT = [".bflan", ".bgsh", ".bnsh", ".bushvt", ".bflyt", ".bflim", ".bntx"]
 SOUND_EXT = [".bfstm", ".bfstp", ".bfwav", ".bars"]
 
@@ -517,24 +517,28 @@ def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None, root_mod_path: 
 
 def convert_havok(hkx: Path) -> None:
     # Convert havok files unsupported by BCML
-    hkx_c = SCRIPT / "HKXConvert.exe" if system() == "Windows" else SCRIPT / "HKXConvert"
-    # Make sure we can run the program by setting the correct permissions
-    hkx_c.chmod(0o755)
-
-    # Convert every hkx found into json, and then to switch
+    readwrite = SCRIPT / "ReadWrite.exe" if system() == "Windows" else None
     print(f"Converting {hkx.name}")
-    if hkx.suffix.startswith(".s"):
-        unyazed_hkx = util.unyaz_if_needed(hkx.read_bytes())
-        hkx.write_bytes(unyazed_hkx)
+    compress_back = hkx.suffix.startswith(".s")
+    raw_suffix = f".{hkx.suffix[2:]}" if compress_back else hkx.suffix
+    work_hkx = hkx.with_suffix(raw_suffix) if raw_suffix != hkx.suffix else hkx
+    out_hkx = Path(f"{work_hkx}.out")
+    raw_bytes = util.unyaz_if_needed(hkx.read_bytes()) if compress_back else hkx.read_bytes()
 
-    run([str(hkx_c), 'hkx2json', str(hkx)])
-    hkx.unlink()
-    run([str(hkx_c), 'json2hkx', '--nx', f'{splitext(hkx)[0]}.json', str(hkx)])
-    Path(f'{splitext(hkx)[0]}.json').unlink()
+    if not readwrite or not readwrite.exists():
+        raise FileNotFoundError(f"ReadWrite.exe not found: {readwrite}")
 
-    if hkx.suffix.startswith(".s"):
-        yaz0_hkx = oead.yaz0.compress(hkx.read_bytes())
-        hkx.write_bytes(yaz0_hkx)
+    readwrite.chmod(0o755)
+    work_hkx.write_bytes(raw_bytes)
+    try:
+        run([str(readwrite), str(work_hkx)])
+        out_bytes = out_hkx.read_bytes()
+        hkx.write_bytes(oead.yaz0.compress(out_bytes) if compress_back else out_bytes)
+    finally:
+        if out_hkx.exists():
+            out_hkx.unlink()
+        if work_hkx != hkx and work_hkx.exists():
+            work_hkx.unlink()
 
 def get_stock_bfstp(bfstp_name: str, bars_file: Path):
     # Look for the bars file containing the bfstp

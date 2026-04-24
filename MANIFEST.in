@@ -1,3 +1,4 @@
 include *.dll
-include ubotw_converter/HKXConvert*
+include ubotw_converter/ReadWrite*
+include ubotw_converter/HKX2.dll
 include ubotw_converter/log.conf
