@@ -11,6 +11,7 @@ from pathlib import Path
 from multiprocessing import get_context
 from typing import Iterator, Optional, Union
 from hashlib import sha1
+from functools import lru_cache
 import sys
 import shutil
 import argparse
@@ -541,27 +542,54 @@ def get_stock_bfstp(bfstp_name: str, bars_file: Path):
         stock_bars = util.get_game_file(f"Sound/Resource/{bars_file.name}")
         stock_tracks,_ = bars.get_bars_tracks(stock_bars.read_bytes())
     except FileNotFoundError:
-        # If there's no loose bars file, find one inside packs
         try:
-            # Look in regular packs
+            # If there's no loose bars file, first try regular packs.
             stock_pack = util.get_game_file(f'Pack/{bars_file.parent.parent.parent.name}')
             stock_bars = oead.Sarc(stock_pack.read_bytes()).get_file(f"Sound/Resource/{bars_file.name}")
-            # Get the stock tracks
             stock_tracks, stock_offsets = bars.get_bars_tracks(bytearray(stock_bars.data))
         except FileNotFoundError:
-            # Look in event packs
-            stock_pack = util.get_game_file(f'Event/{bars_file.parent.parent.parent.name}')
-            stock_bars = oead.Sarc(util.unyaz_if_needed(stock_pack.read_bytes())).get_file(f"Sound/Resource/{bars_file.name}")
-            if not isinstance(stock_bars, oead.File):
-                raise FileNotFoundError(f"File Sound/Resource/{bars_file.name} was not found in game dump.")
-            # Get the stock tracks
-            stock_tracks, stock_offsets = bars.get_bars_tracks(bytearray(stock_bars.data))
+            try:
+                # Then try an event pack whose name matches the current context.
+                stock_pack = util.get_game_file(f'Event/{bars_file.parent.parent.parent.name}')
+                stock_bars = oead.Sarc(util.unyaz_if_needed(stock_pack.read_bytes())).get_file(f"Sound/Resource/{bars_file.name}")
+                if not isinstance(stock_bars, oead.File):
+                    raise FileNotFoundError(f"File Sound/Resource/{bars_file.name} was not found in game dump.")
+                stock_tracks, stock_offsets = bars.get_bars_tracks(bytearray(stock_bars.data))
+            except FileNotFoundError:
+                # Loose event bars under content/Sound/Resource have no useful
+                # pack-name context, so search stock event packs once and use
+                # a cached index for repeated lookups.
+                stock_event = _get_stock_event_bars_index().get(bars_file.name)
+                if stock_event is None:
+                    raise FileNotFoundError(f"File Sound/Resource/{bars_file.name} was not found in stock event packs.")
+                stock_pack = oead.Sarc(util.unyaz_if_needed(stock_event.read_bytes()))
+                stock_bars = stock_pack.get_file(f"Sound/Resource/{bars_file.name}")
+                if not isinstance(stock_bars, oead.File):
+                    raise FileNotFoundError(f"File Sound/Resource/{bars_file.name} was not found in stock event pack {stock_event.name}.")
+                stock_tracks, _ = bars.get_bars_tracks(bytearray(stock_bars.data))
     return stock_tracks[bfstp_name]
+
+
+@lru_cache(maxsize=1)
+def _get_stock_event_bars_index():
+    event_root = Path(util.get_game_file("Pack/Bootup.pack")).parent.parent / "Event"
+    bars_index = {}
+    for pattern in ("*.sbeventpack", "*.beventpack"):
+        for stock_event in event_root.glob(pattern):
+            try:
+                stock_pack = oead.Sarc(util.unyaz_if_needed(stock_event.read_bytes()))
+                for file in stock_pack.get_files():
+                    if file.name.startswith("Sound/Resource/") and file.name.endswith(".bars"):
+                        bars_index.setdefault(file.name.rsplit("/", 1)[-1], stock_event)
+            except Exception:
+                continue
+    return bars_index
 
 def convert_bflim(sblarc: Path, pack_name: str) -> None:
     # Convert bflim files inside a WiiU sblarc
     blarc = oead.Sarc(util.unyaz_if_needed(sblarc.read_bytes()))
     blarc_path = _get_temp_extract_path(sblarc)
+    stock_blarc = None
 
     if any("bflim" in i.name for i in blarc.get_files()):
         # Get the pack file where the sblarc comes from
@@ -579,7 +607,12 @@ def convert_bflim(sblarc: Path, pack_name: str) -> None:
 
         # Get a stock bntx file
         bntx_file = stock_blarc.get_file("timg/__Combined.bntx")
-        extract_sarc(blarc, blarc_path)
+        if stock_blarc:
+            # For stock system UI archives, keep the stock Switch layout as the
+            # base and only inject converted textures into the combined BNTX.
+            extract_sarc(stock_blarc, blarc_path)
+        else:
+            extract_sarc(blarc, blarc_path)
         Path(blarc_path / bntx_file.name).write_bytes(bntx_file.data)
 
         for bflim in blarc_path.rglob('*.bflim'):
@@ -643,7 +676,13 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
                 tracks[name] = bcf_converter.conv_file(data, magic, '<')
 
             elif magic == 'FSTP' and not bfstm_exists:
-                tracks[name] = get_stock_bfstp(name, file)
+                try:
+                    tracks[name] = get_stock_bfstp(name, file)
+                except FileNotFoundError:
+                    # Some mods add or replace embedded FSTP tracks that have
+                    # no stock Switch counterpart. In those cases we still can
+                    # byte-convert the embedded stream directly.
+                    tracks[name] = bcf_converter.conv_file(data, magic, '<')
 
             bars_bytes[offsets[name]:offsets[name] + len(tracks[name])] = tracks[name]
 
@@ -668,6 +707,9 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
         pack_path = _get_temp_extract_path(file)
         if any(splitext(i.name)[1] in SUPPORTED for i in pack.get_files()):
             try:
+                if file.name in {"Bootup.pack", "Title.pack"}:
+                    stock_pack = oead.Sarc(util.unyaz_if_needed(util.get_game_file(f"Pack/{file.name}").read_bytes()))
+                    extract_sarc(stock_pack, pack_path)
                 extract_sarc(pack, pack_path)
                 new_files = pack_path.rglob('*.*')
                 for new in new_files:
@@ -688,8 +730,12 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
         else:
             # Convert bflim files inside of sblarc files
             convert_bflim(file, mod_path.name)
-            # Convert bflyt files inside of sblarc files
-            convert_bflyt_sblarc(file)
+            if not (
+                (mod_path.name == "Bootup.pack" and file.name == "Common.sblarc")
+                or (mod_path.name == "Title.pack" and file.name == "Title.sblarc")
+            ):
+                # Convert bflyt files inside of sblarc files
+                convert_bflyt_sblarc(file)
 
     elif file.suffix in HAVOK_EXT:
         # Convert havok files
@@ -714,7 +760,7 @@ def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
         is_modded = is_file_modded(canon, file.read_bytes())
 
         # Convert supported files
-        if is_modded: 
+        if is_modded or file.suffix == ".bars": 
             change_platform(file, mod_path, root_mod_path)
             
         elif file.suffix in NO_CONVERT_EXTS or file.suffix == ".bcamanim":
