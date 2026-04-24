@@ -9,7 +9,7 @@ from platform import system
 from json import loads
 from pathlib import Path
 from multiprocessing import get_context
-from typing import Optional, Union
+from typing import Iterator, Optional, Union
 from hashlib import sha1
 import sys
 import shutil
@@ -232,6 +232,10 @@ def _find_external_tex1(file: Path, root_mod_path: Optional[Path]) -> Optional[P
 
 def _merge_external_tex1_with_tex2(tex1_path: Path, tex2_res_file: ResFile, name: str) -> Optional[ResFile]:
     tex1_res_file = ResFile(MemoryStream(util.unyaz_if_needed(tex1_path.read_bytes())))
+    return _merge_tex1_res_file_with_tex2(tex1_res_file, tex2_res_file, name)
+
+
+def _merge_tex1_res_file_with_tex2(tex1_res_file: ResFile, tex2_res_file: ResFile, name: str) -> Optional[ResFile]:
     tex1_names = {texture.Name for texture in list(tex1_res_file.Textures.Values)}
     tex2_names = {texture.Name for texture in list(tex2_res_file.Textures.Values)}
     if tex1_names != tex2_names:
@@ -245,6 +249,44 @@ def _merge_external_tex1_with_tex2(tex1_path: Path, tex2_res_file: ResFile, name
 
     tex1_res_file.Name = name
     return tex1_res_file
+
+
+def _iter_wiiu_content_roots() -> Iterator[Path]:
+    for key in ("update_dir", "dlc_dir", "game_dir"):
+        try:
+            root = util.get_settings(key)
+        except Exception:
+            continue
+        if root:
+            yield Path(root)
+
+
+def _get_stock_wiiu_tex1(file: Path) -> Optional[ResFile]:
+    if ".Tex2" not in file.suffixes:
+        return None
+
+    tex1_name = file.name.replace("Tex2", "Tex1")
+    pack_parent = next((parent for parent in file.parents if parent.suffix == ".pack"), None)
+    if pack_parent:
+        inner_rel = file.relative_to(pack_parent).with_name(tex1_name).as_posix()
+        for root in _iter_wiiu_content_roots():
+            pack_path = root / "Pack" / pack_parent.name
+            if not pack_path.exists():
+                continue
+            try:
+                stock_sarc = oead.Sarc(util.unyaz_if_needed(pack_path.read_bytes()))
+                stock_inner = stock_sarc.get_file(inner_rel)
+                if stock_inner:
+                    return ResFile(MemoryStream(util.unyaz_if_needed(bytes(stock_inner.data))))
+            except Exception:
+                continue
+
+    for root in _iter_wiiu_content_roots():
+        loose_tex1 = root / "Model" / tex1_name
+        if loose_tex1.exists():
+            return ResFile(MemoryStream(util.unyaz_if_needed(loose_tex1.read_bytes())))
+
+    return None
 
 
 def _trim_texture_to_base_mip(texture) -> None:
@@ -284,6 +326,16 @@ def _sanitize_invalid_mips(res_file: ResFile) -> bool:
         texture.MipOffsets = [0] * len(list(texture.MipOffsets))
         sanitized = True
     return sanitized
+
+
+def _collapse_all_texture_mips(res_file: ResFile) -> bool:
+    collapsed = False
+    for texture in list(res_file.Textures.Values):
+        if int(texture.MipCount) <= 1 and len(bytes(texture.MipData)) == 0:
+            continue
+        _trim_texture_to_base_mip(texture)
+        collapsed = True
+    return collapsed
 
 
 def _get_temp_extract_path(file: Path) -> Path:
@@ -390,10 +442,15 @@ def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None, root_mod_path: 
         name = name.replace("Tex2", "Tex")
         res_file.Name = name
         external_tex1 = _find_external_tex1(sbfres, root_mod_path)
+        merged = None
         if external_tex1:
             merged = _merge_external_tex1_with_tex2(external_tex1, res_file, name)
-            if merged:
-                res_file = merged
+        else:
+            stock_wiiu_tex1 = _get_stock_wiiu_tex1(sbfres)
+            if stock_wiiu_tex1:
+                merged = _merge_tex1_res_file_with_tex2(stock_wiiu_tex1, res_file, name)
+        if merged:
+            res_file = merged
     
     if not res_file.IsPlatformSwitch:
         stock_bytes = _get_stock_bfres_bytes(sbfres, mod_path, f"{name}{ext}")
@@ -414,10 +471,24 @@ def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None, root_mod_path: 
 
         try:
             res_file.ChangePlatform(True, 4096, 0, 5, 0, 3, ConverterHandle.BOTW)
-        except Exception:
-            if not _sanitize_invalid_mips(res_file):
-                raise
-            res_file.ChangePlatform(True, 4096, 0, 5, 0, 3, ConverterHandle.BOTW)
+        except Exception as first_err:
+            sanitized = False
+            try:
+                sanitized = _sanitize_invalid_mips(res_file)
+            except Exception:
+                sanitized = False
+
+            if sanitized:
+                try:
+                    res_file.ChangePlatform(True, 4096, 0, 5, 0, 3, ConverterHandle.BOTW)
+                except Exception as second_err:
+                    if not _collapse_all_texture_mips(res_file):
+                        raise second_err
+                    res_file.ChangePlatform(True, 4096, 0, 5, 0, 3, ConverterHandle.BOTW)
+            else:
+                if not _collapse_all_texture_mips(res_file):
+                    raise first_err
+                res_file.ChangePlatform(True, 4096, 0, 5, 0, 3, ConverterHandle.BOTW)
         res_file.Alignment = 0x08 if sbfres.suffix == ".bcamanim" else 0x0C
         output_res_file = res_file
 
