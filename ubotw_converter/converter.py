@@ -62,11 +62,10 @@ ERROR_LOG = SCRIPT / "error.log"
 logging.config.fileConfig(fname=LOG_CONF, defaults={"logfilename": ERROR_LOG, "loglevel": args.log_level.upper()})
 logger = logging.getLogger(__name__)
 
-# BCML flags .sesetlist as unsupported, but the current pipeline already
-# produces correct Switch PTCL payloads for the tested BOTW cases. We still
-# need to restore the expected Yaz0 wrapper inside event packs without touching
-# unrelated payloads.
-NO_CONVERT_EXTS.discard(".sesetlist")
+# Keep `.sesetlist` in BCML's unsupported set so event-pack extraction still
+# falls back to stock Switch payloads for unmodified files. The PTCL post-pass
+# below then recompresses those restored raw `VFXB` payloads back into the
+# expected Yaz0 wrapper inside event packs.
 
 def is_file_modded(name: str, file: Union[bytes, Path], count_new: bool = True) -> bool:
     table = util.get_hash_table(True)
@@ -741,6 +740,12 @@ def convert(mod: Path) -> None:
                 for warning in warnings:
                     # Write BCML's warning to a file    
                     if all(i not in warning for i in SUPPORTED):
+                        if warning.startswith("This mod contains a file not supported by the converter: "):
+                            warning = warning.replace(
+                                "This mod contains a file not supported by the converter: ",
+                                "BCML marked this file as unsupported via NO_CONVERT_EXTS: ",
+                                1,
+                            )
                         logger.warning(warning)
 
     except Exception as err:
