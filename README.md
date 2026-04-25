@@ -25,8 +25,10 @@ BCML's converter is still limited, so using other tools to convert those files t
 - `.sbitemico`
 - `.hkcl`
 - `.hkrg`
+- `.hkrb`
 - `.shknm2`
 - `.shksc`
+- `.shktmrb`
 - `.bflim`*
 - `.bcamanim`**
 - `.bflyt`

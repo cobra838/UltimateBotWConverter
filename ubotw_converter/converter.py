@@ -41,10 +41,10 @@ from BfresLibrary import ResFile
 from BfresLibrary.PlatformConverters import ConverterHandle
 
 # Supported formats
-SUPPORTED = [".sbfres", ".sbitemico", ".hkcl", ".hkrg", ".shknm2", ".shksc", ".bars", ".bfstm", ".bflim", ".bflyt", ".sblarc", ".bcamanim"]
+SUPPORTED = [".sbfres", ".sbitemico", ".hkcl", ".hkrg", ".hkrb", ".shknm2", ".shksc", ".shktmrb", ".bars", ".bfstm", ".bflim", ".bflyt", ".sblarc", ".bcamanim"]
 
 BFRES_EXT = [".sbfres", ".sbitemico", ".bcamanim"]
-HAVOK_EXT = [".hkcl", ".hkrg", ".shknm2", ".shksc"]
+HAVOK_EXT = [".hkcl", ".hkrg", ".hkrb", ".shknm2", ".shksc", ".shktmrb"]
 LAYOUT_EXT = [".bflan", ".bgsh", ".bnsh", ".bushvt", ".bflyt", ".bflim", ".bntx"]
 SOUND_EXT = [".bfstm", ".bfstp", ".bfwav", ".bars"]
 
