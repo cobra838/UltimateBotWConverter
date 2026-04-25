@@ -419,6 +419,15 @@ def _patch_switch_bfres_bytes(data: bytes, res_file: ResFile, stock_bytes: Optio
     return bytes(patched)
 
 
+def _validate_switch_bfres_bytes(data: bytes, name: str) -> None:
+    if str(args.log_level).lower() != "debug":
+        return
+    try:
+        ResFile(MemoryStream(data))
+    except Exception as err:
+        raise ValueError(f"Converted BFRES is invalid for {name}") from err
+
+
 def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None, root_mod_path: Optional[Path] = None) -> None:
     # Based on https://github.com/KillzXGaming/BfresPlatformConverter
     name: str = sbfres.stem
@@ -470,6 +479,7 @@ def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None, root_mod_path: 
                 mem = MemoryStream()
                 templated.Save(mem)
                 saved_bytes = _patch_switch_bfres_bytes(bytes(mem.ToArray()), templated, stock_bytes)
+                _validate_switch_bfres_bytes(saved_bytes, sbfres.name)
                 if sbfres.suffix.startswith(".s"):
                     sbfres.write_bytes(oead.yaz0.compress(saved_bytes))
                 else:
@@ -510,11 +520,14 @@ def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None, root_mod_path: 
             mem = MemoryStream()
             output_res_file.Save(mem)
             saved_bytes = _patch_switch_bfres_bytes(bytes(mem.ToArray()), output_res_file, stock_bytes)
+            _validate_switch_bfres_bytes(saved_bytes, sbfres.name)
             sbfres.write_bytes(oead.yaz0.compress(saved_bytes))
         else:
             mem = MemoryStream()
             output_res_file.Save(mem)
-            sbfres.write_bytes(_patch_switch_bfres_bytes(bytes(mem.ToArray()), output_res_file, stock_bytes))
+            saved_bytes = _patch_switch_bfres_bytes(bytes(mem.ToArray()), output_res_file, stock_bytes)
+            _validate_switch_bfres_bytes(saved_bytes, sbfres.name)
+            sbfres.write_bytes(saved_bytes)
         
         if is_tex1 and tex2 and tex2.exists():
             tex2.unlink()
