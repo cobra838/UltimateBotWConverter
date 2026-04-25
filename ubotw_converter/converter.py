@@ -488,7 +488,7 @@ def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None, root_mod_path: 
                 return
 
         try:
-            res_file.ChangePlatform(True, 4096, 0, 5, 0, 3, ConverterHandle.BOTW)
+            res_file.ChangePlatform(True, 4096, 5, 0, 0, 3, ConverterHandle.BOTW)
         except Exception as first_err:
             sanitized = False
             try:
@@ -498,15 +498,15 @@ def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None, root_mod_path: 
 
             if sanitized:
                 try:
-                    res_file.ChangePlatform(True, 4096, 0, 5, 0, 3, ConverterHandle.BOTW)
+                    res_file.ChangePlatform(True, 4096, 5, 0, 0, 3, ConverterHandle.BOTW)
                 except Exception as second_err:
                     if not _collapse_all_texture_mips(res_file):
                         raise second_err
-                    res_file.ChangePlatform(True, 4096, 0, 5, 0, 3, ConverterHandle.BOTW)
+                    res_file.ChangePlatform(True, 4096, 5, 0, 0, 3, ConverterHandle.BOTW)
             else:
                 if not _collapse_all_texture_mips(res_file):
                     raise first_err
-                res_file.ChangePlatform(True, 4096, 0, 5, 0, 3, ConverterHandle.BOTW)
+                res_file.ChangePlatform(True, 4096, 5, 0, 0, 3, ConverterHandle.BOTW)
         res_file.Alignment = 0x08 if sbfres.suffix == ".bcamanim" else 0x0C
         output_res_file = res_file
 
