@@ -339,16 +339,52 @@ def _collapse_all_texture_mips(res_file: ResFile) -> bool:
     return collapsed
 
 
+def _get_temp_extract_root(file: Path) -> Path:
+    for parent in (file.parent, *file.parents):
+        if parent.name.startswith("_tmp_extract_"):
+            return parent
+
+    mod_label = "mod"
+    mod_root = None
+    for parent in (file.parent, *file.parents):
+        info = parent / "info.json"
+        if info.exists():
+            mod_root = parent
+            try:
+                meta = loads(info.read_text("utf-8"))
+                mod_label = meta.get("name") or parent.name
+            except Exception:
+                mod_label = parent.name
+            break
+
+    if mod_root is None:
+        mod_root = file.parent
+        mod_label = file.parent.name or "mod"
+
+    safe_mod_name = re.sub(r"[^A-Za-z0-9._-]+", "_", mod_label).strip("._-") or "mod"
+    mod_digest = sha1(str(mod_root).encode("utf-8")).hexdigest()[:8]
+    return SCRIPT / f"_tmp_extract_{safe_mod_name}_{mod_digest}"
+
+
 def _get_temp_extract_path(file: Path) -> Path:
-    digest = sha1(str(file).encode("utf-8")).hexdigest()[:12]
-    return SCRIPT / "_tmp_extract" / digest / file.name
+    temp_root = _get_temp_extract_root(file)
+    file_digest = sha1(str(file).encode("utf-8")).hexdigest()[:12]
+    return temp_root / file_digest / file.name
 
 
 def _format_conversion_target(file: Path, mod_path: Path) -> str:
     rel = file.relative_to(mod_path)
-    if "_tmp_extract" in mod_path.parts and mod_path.suffix:
+    if any(part.startswith("_tmp_extract") for part in mod_path.parts) and mod_path.suffix:
         return f"{mod_path.name} -> {rel}"
     return str(rel)
+
+
+def _cleanup_temp_extract_path(path: Path) -> None:
+    shutil.rmtree(path, ignore_errors=True)
+    try:
+        path.parent.rmdir()
+    except OSError:
+        pass
 
 
 def _find_section_offsets(data: bytes, magic: bytes) -> list[int]:
@@ -651,7 +687,7 @@ def convert_bflim(sblarc: Path, pack_name: str) -> None:
         write_sarc(blarc, blarc_path, sblarc)
 
         # Remove the temporary folder
-        shutil.rmtree(blarc_path)
+        _cleanup_temp_extract_path(blarc_path)
 
 def convert_bflyt_sblarc(sblarc: Path) -> None:
     # Convert bflyt files inside a WiiU sblarc
@@ -670,7 +706,7 @@ def convert_bflyt_sblarc(sblarc: Path) -> None:
 
             write_sarc(blarc, blarc_path, sblarc)
         finally:
-            shutil.rmtree(blarc_path)
+            _cleanup_temp_extract_path(blarc_path)
 
 def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> None:
     if file.suffix in BFRES_EXT:
@@ -745,7 +781,7 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
                 write_sarc(pack, pack_path, file)
                 
             finally:
-                shutil.rmtree(pack_path)
+                _cleanup_temp_extract_path(pack_path)
 
     elif file.suffix == ".sblarc":
         if file.name == "BootUp.sblarc":
@@ -825,6 +861,7 @@ def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
 def convert(mod: Path) -> None:
     # Open the mod
     mod_path = open_mod(mod)
+    temp_extract_root = _get_temp_extract_root(mod_path / "info.json")
     try:
         if (mod_path / "info.json").exists():
             meta = loads((mod_path / "info.json").read_text("utf-8"))
@@ -895,6 +932,7 @@ def convert(mod: Path) -> None:
     finally:
         # Remove the temporary mod_path
         shutil.rmtree(mod_path, ignore_errors=True)
+        shutil.rmtree(temp_extract_root, ignore_errors=True)
 
 def main() -> None:
     ERROR_LOG.write_text("", encoding="utf-8")

@@ -1,6 +1,15 @@
 @echo off
 setlocal enabledelayedexpansion
-cd /d "%~dp0"
+cd /d "%~dp0.."
+if "%~1"=="" (
+echo No BNP file was provided.
+echo Drag and drop one or more .bnp files onto this script,
+echo or run:
+echo ubotw_converter\convert_single_thread.bat "path\to\your\bnp"
+echo.
+pause
+exit /b 1
+)
 set /A TOTAL=0
 set /A COUNTER=0
 FOR %%A IN (%*) DO (
@@ -14,7 +23,7 @@ echo.
 set /A COUNTER+=1
 echo Attempting to convert !COUNTER! of %TOTAL% mods, please wait...
 echo.
-python converter.py -s %%A
+python -m ubotw_converter.converter -s "%%~A"
 )
 echo.
 echo Processed %COUNTER% mods.

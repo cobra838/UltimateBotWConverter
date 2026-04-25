@@ -2,7 +2,7 @@
 A script combining various sources to convert BotW WiiU mods for the Switch version of the game
 
 ## Requirements
-- Python 3.7 or 3.8 (If on Windows, you must check `Add Python to PATH` during installation)
+- Python 3.9 (If on Windows, you must check `Add Python to PATH` during installation)
 - [.NET 5.0 Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/5.0/runtime) (required for the [HKX2 ReadWrite Havok converter](https://gitlab.com/HKX2))
 - A legal, unpacked dump of BoTW Switch (1.6.0)
 - [BotW Cross-Platform Mod Loader](https://github.com/NiceneNerd/BCML)
@@ -16,6 +16,22 @@ If wanting to install from source, run `pip install -e .` inside the folder wher
 
 ## Usage
 In a CLI, run `convert_to_switch path/to/your/bnp`, and the conversion process will start. If you encounter problems caused by multi-processing, you can use `convert_to_switch -s path/to/your/bnp` to enable single core. 
+
+You can also run the converter module directly:
+- `python -m ubotw_converter.converter -s "your.bnp" --log-level debug`
+
+`-s` runs the converter in single-threaded mode, which can help avoid multiprocessing-related issues.
+
+`--log-level debug` currently enables additional validation for converted BFRES files. This is slower, but more reliable for troubleshooting problematic BFRES conversions.
+
+On Windows, you can also use:
+- `ubotw_converter\convert.bat "your.bnp"`
+- `ubotw_converter\convert_single_thread.bat "your.bnp"`
+
+You can also drag and drop one or more `.bnp` files onto those `.bat` files.
+
+On systems with `bash`, you can use:
+- `./ubotw_converter/convert.sh your.bnp`
 
 ## Supported formats
 BCML's converter is still limited, so using other tools to convert those files that it can't is our only option for now. With this script, I've automated the process of using those other tools and added these formats to the supported list:
@@ -35,7 +51,7 @@ BCML's converter is still limited, so using other tools to convert those files t
 
 \*For bflim files, only files that replace the original ones can be converted, not completely new ones.  
 
-\*\*`.bcamanim` files are a bit tricky, since none of the tools currently available can convert them properly. Instead, the converter looks in your game files for an equivalent one, and replaces the WiiU one with that one. This means that `.bcamanim` files that are not packed in vanilla-named files will mean you would have to replace them manually
+\*\*`.bcamanim` files are not converted reliably yet. The converter currently attempts direct BFRES platform conversion for them, but tested outputs do not always match stock Switch files, so manual replacement or further format-specific handling may still be required.
 
 ## Credits 
 - [AboodXD](https://github.com/aboood40091) - BCFSTM-BCFWAV Converter, BNTX Injector, Bflim Extractor
