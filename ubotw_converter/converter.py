@@ -344,6 +344,13 @@ def _get_temp_extract_path(file: Path) -> Path:
     return SCRIPT / "_tmp_extract" / digest / file.name
 
 
+def _format_conversion_target(file: Path, mod_path: Path) -> str:
+    rel = file.relative_to(mod_path)
+    if "_tmp_extract" in mod_path.parts and mod_path.suffix:
+        return f"{mod_path.name} -> {rel}"
+    return str(rel)
+
+
 def _find_section_offsets(data: bytes, magic: bytes) -> list[int]:
     offsets = []
     start = 0
@@ -755,7 +762,7 @@ def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
                 return
             change_platform(file, mod_path, root_mod_path)
         except Exception as err:
-            logger.warning(f"{file.relative_to(mod_path)} could not be converted")
+            logger.warning(f"{_format_conversion_target(file, mod_path)} could not be converted")
             logger.debug(err, exc_info=True)
         return
 
@@ -799,7 +806,7 @@ def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
                         change_platform(file, mod_path)
                 
     except Exception as err:
-        logger.warning(f"{file.relative_to(mod_path)} could not be converted")
+        logger.warning(f"{_format_conversion_target(file, mod_path)} could not be converted")
         logger.debug(err, exc_info=True)
 
 def convert(mod: Path) -> None:
