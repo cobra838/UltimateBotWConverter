@@ -6,7 +6,7 @@ from urllib.request import urlopen, urlretrieve
 from io import BytesIO
 from zipfile import ZipFile
 from platform import system 
-from json import loads
+from json import dumps, loads
 from pathlib import Path
 from multiprocessing import get_context
 from typing import Iterator, Optional, Union
@@ -63,6 +63,8 @@ ERROR_LOG = SCRIPT / "error.log"
 logging.config.fileConfig(fname=LOG_CONF, defaults={"logfilename": ERROR_LOG, "loglevel": args.log_level.upper()})
 logger = logging.getLogger(__name__)
 
+WRAPPER_STATE_FILE = "__wrapper_state__"
+
 # Keep `.sesetlist` in BCML's unsupported set so event-pack extraction still
 # falls back to stock Switch payloads for unmodified files. The PTCL post-pass
 # below then recompresses those restored raw `VFXB` payloads back into the
@@ -97,17 +99,34 @@ def confirm_prompt(question: str) -> bool:
 def extract_sarc(sarc: oead.Sarc, sarc_path: Path) -> None:
     # Extract the data from a SARC file
     Path(sarc_path).mkdir(parents=True, exist_ok=True)
+    wrapper_state = {}
     for file in sarc.get_files():
+        data = bytes(file.data)
+        wrapper_state[file.name] = data[:4] == b"Yaz0"
         if not Path(sarc_path / file.name).parent.exists():
             Path(sarc_path / file.name).parent.mkdir(parents=True, exist_ok=True)
-        Path(sarc_path / file.name).write_bytes(file.data)
+        Path(sarc_path / file.name).write_bytes(data)
+    (Path(sarc_path) / WRAPPER_STATE_FILE).write_text(dumps(wrapper_state), encoding="utf-8")
 
 def write_sarc(sarc: oead.Sarc, sarc_path: Path, sarc_file: Path) -> None:
     # Overwrite the SARC file with the modified files
     new_sarc = oead.SarcWriter(endian=oead.Endianness.Little)
-    for file in sarc_path.rglob("*.*"):
+    wrapper_state_path = sarc_path / WRAPPER_STATE_FILE
+    wrapper_state = (
+        loads(wrapper_state_path.read_text(encoding="utf-8"))
+        if wrapper_state_path.exists()
+        else {}
+    )
+    for file in sarc_path.rglob("*"):
+        if not file.is_file() or file.name == WRAPPER_STATE_FILE:
+            continue
         new_file = file.relative_to(sarc_path).as_posix()
-        new_sarc.files[new_file] = file.read_bytes()
+        data = file.read_bytes()
+        if wrapper_state.get(new_file) is True and data[:4] != b"Yaz0":
+            data = oead.yaz0.compress(data)
+        elif wrapper_state.get(new_file) is False and data[:4] == b"Yaz0":
+            data = util.unyaz_if_needed(data)
+        new_sarc.files[new_file] = data
     if sarc_file.suffix == ".pack":
         sarc_file.write_bytes(new_sarc.write()[1])
     else:
