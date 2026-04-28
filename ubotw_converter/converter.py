@@ -182,6 +182,12 @@ def _recompress_sesetlists_in_mod(mod_path: Path) -> None:
         if new_data != file.read_bytes():
             file.write_bytes(new_data)
 
+
+def _remove_dummy_byml_placeholders(mod_path: Path) -> None:
+    for file in mod_path.rglob("dummy.byml"):
+        if file.is_file():
+            file.unlink()
+
 def _get_stock_bfres(file: Path, mod_path: Optional[Path], switch_name: str) -> Optional[ResFile]:
     stock_bytes = _get_stock_bfres_bytes(file, mod_path, switch_name)
     if stock_bytes is None:
@@ -915,6 +921,7 @@ def convert(mod: Path) -> None:
                         convert_files(file, mod_path, root_mod_path)
         
         # Run the mod through BCML's automatic converter 
+        _remove_dummy_byml_placeholders(mod_path)
         warnings = convert_mod(mod_path, False, True)
         _recompress_sesetlists_in_mod(mod_path)
 
