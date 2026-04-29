@@ -64,6 +64,8 @@ logging.config.fileConfig(fname=LOG_CONF, defaults={"logfilename": ERROR_LOG, "l
 logger = logging.getLogger(__name__)
 
 WRAPPER_STATE_FILE = "__wrapper_state__"
+SOURCE_PATH_FILE = "__source_path__"
+CONSUMED_TEX_DIR = "__consumed_tex__"
 
 # Keep `.sesetlist` in BCML's unsupported set so event-pack extraction still
 # falls back to stock Switch payloads for unmodified files. The PTCL post-pass
@@ -96,7 +98,7 @@ def confirm_prompt(question: str) -> bool:
         reply = input(f"{question} (Y/n): ").lower()
     return reply in ("", "y")
 
-def extract_sarc(sarc: oead.Sarc, sarc_path: Path) -> None:
+def extract_sarc(sarc: oead.Sarc, sarc_path: Path, source_path: Optional[Path] = None) -> None:
     # Extract the data from a SARC file
     Path(sarc_path).mkdir(parents=True, exist_ok=True)
     wrapper_state = {}
@@ -107,6 +109,8 @@ def extract_sarc(sarc: oead.Sarc, sarc_path: Path) -> None:
             Path(sarc_path / file.name).parent.mkdir(parents=True, exist_ok=True)
         Path(sarc_path / file.name).write_bytes(data)
     (Path(sarc_path) / WRAPPER_STATE_FILE).write_text(dumps(wrapper_state), encoding="utf-8")
+    if source_path is not None:
+        (Path(sarc_path) / SOURCE_PATH_FILE).write_text(str(source_path), encoding="utf-8")
 
 def write_sarc(sarc: oead.Sarc, sarc_path: Path, sarc_file: Path) -> None:
     # Overwrite the SARC file with the modified files
@@ -118,7 +122,7 @@ def write_sarc(sarc: oead.Sarc, sarc_path: Path, sarc_file: Path) -> None:
         else {}
     )
     for file in sarc_path.rglob("*"):
-        if not file.is_file() or file.name == WRAPPER_STATE_FILE:
+        if not file.is_file() or file.name in {WRAPPER_STATE_FILE, SOURCE_PATH_FILE}:
             continue
         new_file = file.relative_to(sarc_path).as_posix()
         data = file.read_bytes()
@@ -188,6 +192,101 @@ def _remove_dummy_byml_placeholders(mod_path: Path) -> None:
         if file.is_file():
             file.unlink()
 
+
+def _get_scope_root(file: Path, root_mod_path: Optional[Path]) -> Optional[Path]:
+    if not root_mod_path:
+        return None
+    try:
+        rel = file.relative_to(root_mod_path)
+    except ValueError:
+        return root_mod_path
+
+    for index, part in enumerate(rel.parts):
+        if part in ("content", "aoc"):
+            return root_mod_path / Path(*rel.parts[:index]) if index else root_mod_path
+    return root_mod_path
+
+
+def _get_extracted_source_path(file: Path) -> Optional[Path]:
+    for parent in (file.parent, *file.parents):
+        source_meta = parent / SOURCE_PATH_FILE
+        if source_meta.exists():
+            try:
+                return Path(source_meta.read_text(encoding="utf-8").strip())
+            except Exception:
+                return None
+        if parent.name.startswith("_tmp_extract_"):
+            break
+    return None
+
+
+def _find_scoped_model_files(scope_root: Path, name: str) -> list[Path]:
+    if not scope_root or not scope_root.exists():
+        return []
+
+    candidates = []
+    for candidate in scope_root.rglob(name):
+        if (
+            candidate.is_file()
+            and "Model" in candidate.parts
+            and any(part in ("content", "aoc") for part in candidate.parts)
+        ):
+            candidates.append(candidate)
+
+    def rank(path: Path):
+        rel = path.relative_to(scope_root).parts
+        if len(rel) >= 3 and rel[0] == "content" and rel[1] == "Model":
+            group = 0
+        elif len(rel) >= 4 and rel[0] == "aoc" and rel[2] == "Model":
+            group = 1
+        elif "content" in rel:
+            group = 2
+        elif "aoc" in rel:
+            group = 3
+        else:
+            group = 4
+        return (group, len(rel), path.as_posix())
+
+    return sorted(candidates, key=rank)
+
+
+def _get_consumed_tex_dir(root_mod_path: Optional[Path]) -> Optional[Path]:
+    if not root_mod_path:
+        return None
+    return root_mod_path / CONSUMED_TEX_DIR
+
+
+def _get_consumed_tex_marker(file: Path, root_mod_path: Optional[Path]) -> Optional[Path]:
+    if not root_mod_path:
+        return None
+    try:
+        rel = file.relative_to(root_mod_path).as_posix()
+    except ValueError:
+        return None
+    marker_dir = _get_consumed_tex_dir(root_mod_path)
+    if marker_dir is None:
+        return None
+    return marker_dir / sha1(rel.encode("utf-8")).hexdigest()
+
+
+def _mark_consumed_tex(file: Path, root_mod_path: Optional[Path]) -> None:
+    marker = _get_consumed_tex_marker(file, root_mod_path)
+    if marker is None:
+        return
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("", encoding="utf-8")
+
+
+def _is_consumed_tex(file: Path, root_mod_path: Optional[Path]) -> bool:
+    marker = _get_consumed_tex_marker(file, root_mod_path)
+    return bool(marker and marker.exists())
+
+
+def _clear_consumed_tex_state(root_mod_path: Optional[Path]) -> None:
+    state_dir = _get_consumed_tex_dir(root_mod_path)
+    if state_dir and state_dir.exists():
+        shutil.rmtree(state_dir, ignore_errors=True)
+
 def _get_stock_bfres(file: Path, mod_path: Optional[Path], switch_name: str) -> Optional[ResFile]:
     stock_bytes = _get_stock_bfres_bytes(file, mod_path, switch_name)
     if stock_bytes is None:
@@ -243,17 +342,44 @@ def _find_external_tex1(file: Path, root_mod_path: Optional[Path]) -> Optional[P
         return None
 
     tex1_name = file.name.replace("Tex2", "Tex1")
-    for root in ("content", "aoc"):
-        candidate = root_mod_path / root / "Model" / tex1_name
-        if candidate.exists():
-            return candidate
+    source_file = _get_extracted_source_path(file) or file
+    scope_root = _get_scope_root(source_file, root_mod_path)
+    if not scope_root:
+        return None
 
-    # Some mods keep matching Tex1 files inside option subfolders instead of
-    # directly under the mod root content/Model path.
-    for candidate in root_mod_path.rglob(tex1_name):
-        if "Model" in candidate.parts and any(part in ("content", "aoc") for part in candidate.parts):
-            return candidate
-    return None
+    candidates = _find_scoped_model_files(scope_root, tex1_name)
+    return candidates[0] if candidates else None
+
+
+def _get_pack_owned_loose_texture_paths(file: Path, root_mod_path: Optional[Path]) -> list[Path]:
+    if not root_mod_path or ".Tex2" not in file.suffixes:
+        return []
+
+    source_file = _get_extracted_source_path(file) or file
+    scope_root = _get_scope_root(source_file, root_mod_path)
+    if not scope_root:
+        return []
+
+    model_name = file.name.replace(".Tex2", "")
+    if not (file.parent / model_name).exists():
+        return []
+
+    # If the model also exists loose in the same scope, do not suppress loose textures.
+    if _find_scoped_model_files(scope_root, model_name):
+        return []
+
+    consumed = []
+    for name in (file.name.replace("Tex2", "Tex1"), file.name):
+        consumed.extend(_find_scoped_model_files(scope_root, name))
+
+    seen = set()
+    unique = []
+    for candidate in consumed:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        unique.append(candidate)
+    return unique
 
 
 def _merge_external_tex1_with_tex2(tex1_path: Path, tex2_res_file: ResFile, name: str) -> Optional[ResFile]:
@@ -519,6 +645,8 @@ def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None, root_mod_path: 
     elif standalone_tex2:
         name = name.replace("Tex2", "Tex")
         res_file.Name = name
+        for consumed in _get_pack_owned_loose_texture_paths(sbfres, root_mod_path):
+            _mark_consumed_tex(consumed, root_mod_path)
         external_tex1 = _find_external_tex1(sbfres, root_mod_path)
         merged = None
         if external_tex1:
@@ -695,9 +823,9 @@ def convert_bflim(sblarc: Path, pack_name: str) -> None:
         if stock_blarc:
             # For stock system UI archives, keep the stock Switch layout as the
             # base and only inject converted textures into the combined BNTX.
-            extract_sarc(stock_blarc, blarc_path)
+            extract_sarc(stock_blarc, blarc_path, sblarc)
         else:
-            extract_sarc(blarc, blarc_path)
+            extract_sarc(blarc, blarc_path, sblarc)
         Path(blarc_path / bntx_file.name).write_bytes(bntx_file.data)
 
         for bflim in blarc_path.rglob('*.bflim'):
@@ -720,7 +848,7 @@ def convert_bflyt_sblarc(sblarc: Path) -> None:
     blarc_path = _get_temp_extract_path(sblarc)
 
     if any("bflyt" in i.name for i in blarc.get_files()):
-        extract_sarc(blarc, blarc_path)
+        extract_sarc(blarc, blarc_path, sblarc)
         try:
             for bflyt in blarc_path.rglob('*.bflyt'):
                 try:
@@ -794,8 +922,8 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
             try:
                 if file.name in {"Bootup.pack", "Title.pack"}:
                     stock_pack = oead.Sarc(util.unyaz_if_needed(util.get_game_file(f"Pack/{file.name}").read_bytes()))
-                    extract_sarc(stock_pack, pack_path)
-                extract_sarc(pack, pack_path)
+                    extract_sarc(stock_pack, pack_path, file)
+                extract_sarc(pack, pack_path, file)
                 new_files = pack_path.rglob('*.*')
                 for new in new_files:
                     try:
@@ -828,6 +956,15 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
 
 def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
     if not file.exists() or file.stat().st_size == 0:
+        return
+
+    if (
+        root_mod_path
+        and file.suffix in BFRES_EXT
+        and any(tag in file.suffixes for tag in (".Tex1", ".Tex2"))
+        and _is_consumed_tex(file, root_mod_path)
+    ):
+        file.unlink(missing_ok=True)
         return
 
     if file.suffix in BFRES_EXT:
@@ -888,6 +1025,7 @@ def convert(mod: Path) -> None:
     mod_path = open_mod(mod)
     temp_extract_root = _get_temp_extract_root(mod_path / "info.json")
     try:
+        _clear_consumed_tex_state(mod_path)
         if (mod_path / "info.json").exists():
             meta = loads((mod_path / "info.json").read_text("utf-8"))
 
@@ -921,6 +1059,7 @@ def convert(mod: Path) -> None:
                         convert_files(file, mod_path, root_mod_path)
         
         # Run the mod through BCML's automatic converter 
+        _clear_consumed_tex_state(mod_path)
         _remove_dummy_byml_placeholders(mod_path)
         warnings = convert_mod(mod_path, False, True)
         _recompress_sesetlists_in_mod(mod_path)
@@ -957,6 +1096,7 @@ def convert(mod: Path) -> None:
 
     finally:
         # Remove the temporary mod_path
+        _clear_consumed_tex_state(mod_path)
         shutil.rmtree(mod_path, ignore_errors=True)
         shutil.rmtree(temp_extract_root, ignore_errors=True)
 
