@@ -250,6 +250,31 @@ def _find_scoped_model_files(scope_root: Path, name: str) -> list[Path]:
     return sorted(candidates, key=rank)
 
 
+def _find_scoped_game_files(scope_root: Path, name: str) -> list[Path]:
+    if not scope_root or not scope_root.exists():
+        return []
+
+    candidates = []
+    for candidate in scope_root.rglob(name):
+        if (
+            candidate.is_file()
+            and any(part in ("content", "aoc") for part in candidate.parts)
+        ):
+            candidates.append(candidate)
+
+    def rank(path: Path):
+        rel = path.relative_to(scope_root).parts
+        if len(rel) >= 2 and rel[0] == "content":
+            group = 0
+        elif len(rel) >= 3 and rel[0] == "aoc":
+            group = 1
+        else:
+            group = 2
+        return (group, len(rel), path.as_posix())
+
+    return sorted(candidates, key=rank)
+
+
 def _get_consumed_tex_dir(root_mod_path: Optional[Path]) -> Optional[Path]:
     if not root_mod_path:
         return None
@@ -348,6 +373,17 @@ def _find_external_tex1(file: Path, root_mod_path: Optional[Path]) -> Optional[P
         return None
 
     candidates = _find_scoped_model_files(scope_root, tex1_name)
+    return candidates[0] if candidates else None
+
+
+def _find_external_bfstm(file: Path, track_name: str, root_mod_path: Optional[Path]) -> Optional[Path]:
+    search_root = root_mod_path or file.parent
+    source_file = _get_extracted_source_path(file) or file
+    scope_root = _get_scope_root(source_file, search_root)
+    if not scope_root:
+        return None
+
+    candidates = _find_scoped_game_files(scope_root, track_name + ".bfstm")
     return candidates[0] if candidates else None
 
 
@@ -874,13 +910,7 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
         for name, data in tracks.items():
             # Read the track header and convert appropiately
             magic: str = data[:0x4].decode("utf-8")
-            try:
-                try:
-                    bfstm_exists = next(mod_path.rglob(name + ".bfstm"))
-                except StopIteration:
-                    bfstm_exists = next(root_mod_path.rglob(name + ".bfstm"))
-            except:
-                bfstm_exists = None
+            bfstm_exists = _find_external_bfstm(file, name, root_mod_path or mod_path)
 
             if magic == 'FWAV':
                 tracks[name] = bcf_converter.conv_file(data, magic, '<')
