@@ -783,53 +783,114 @@ def _convert_cnt1_parsed(parsed: dict[str, object], src_endian: str, dst_endian:
 
 
 def _convert_usd1_tail_via_model(tail: bytes, src_endian: str, dst_endian: str) -> bytes:
-    payload = bytearray()
+    words: list[bytes] = []
+    strings: list[bytes] = []
+    trailer = b""
     cursor = 0
-    while len(tail) - cursor >= 4:
+    while cursor < len(tail):
         current_tail = tail[cursor:]
-        current_end = current_tail.find(b"\x00")
-        current_token = current_tail if current_end == -1 else current_tail[:current_end]
-        next_is_identifier = len(tail) - cursor >= 8 and _looks_like_ascii_identifier_blob(tail[cursor + 4 :])
-        current_word = tail[cursor : cursor + 4]
-        next_tail = tail[cursor + 4 :] if len(tail) - cursor >= 8 else b""
-        next_end = next_tail.find(b"\x00") if next_tail else -1
-        next_token = next_tail if next_end == -1 else next_tail[:next_end]
-        next_is_short_prefix = (
-            len(next_token) <= 2
-            and len(tail) - cursor >= 12
-            and _looks_like_ascii_identifier_blob(tail[cursor + 8 :])
-        )
-        if (
-            next_is_identifier
-            and current_word[2:4] == b"\x00\x00"
-            and 0x20 <= current_word[0] <= 0x7E
-            and 0x20 <= current_word[1] <= 0x7E
-        ):
-            payload += _swap_u32(tail, cursor, src_endian, dst_endian)
-            cursor += 4
-            break
         if _looks_like_ascii_identifier_blob(current_tail):
-            if not (len(current_token) <= 2 and current_word[2:4] == b"\x00\x00" and next_is_identifier):
-                break
-        if next_is_identifier:
-            payload += _swap_u32(tail, cursor, src_endian, dst_endian)
-            cursor += 4
-            if next_is_short_prefix:
-                continue
+            token_end = current_tail.find(b"\x00")
+            token_size = len(current_tail) if token_end == -1 else token_end + 1
+            strings.append(current_tail[:token_size])
+            cursor += token_size
+            continue
+        if len(current_tail) < 4:
+            trailer = current_tail
+            cursor = len(tail)
             break
-        payload += _swap_u32(tail, cursor, src_endian, dst_endian)
+        words.append(_swap_u32(tail, cursor, src_endian, dst_endian))
         cursor += 4
-    payload += tail[cursor:]
-    return bytes(payload)
+    return b"".join(words) + b"".join(strings) + trailer
+
+
+def _read_cstring_blob(data: bytes, offset: int) -> bytes:
+    if offset < 0 or offset >= len(data):
+        return b""
+    end = data.find(b"\x00", offset)
+    return data[offset:] if end == -1 else data[offset : end + 1]
+
+
+def _swap_u32_words_blob(data: bytes, src_endian: str, dst_endian: str) -> bytes:
+    converted = bytearray()
+    cursor = 0
+    while cursor + 4 <= len(data):
+        converted += _swap_u32(data, cursor, src_endian, dst_endian)
+        cursor += 4
+    converted += data[cursor:]
+    return bytes(converted)
 
 
 def _convert_usd1_parsed(parsed: dict[str, object], src_endian: str, dst_endian: str) -> dict[str, object]:
     tail = _bytes_from_json_field(parsed["tail_hex"], "usd1.tail_hex")
+    entries = list(parsed["entries"])
+    entry_count = len(entries)
+    tail_base = 0x0C + entry_count * 0x0C
+
+    semantic_entries: list[dict[str, object]] = []
+    for index, entry in enumerate(entries):
+        entry_pos = 0x0C + index * 0x0C
+        suffix = _bytes_from_json_field(entry["suffix_hex"], f"usd1.entries[{index}].suffix_hex", 2)
+        data_type = suffix[0] if suffix else 0
+        value_u16 = int(entry["value_u16"])
+        name_offset = int(entry["first_u32"]) + entry_pos - tail_base
+        data_offset = int(entry["second_u32"]) + entry_pos - tail_base if int(entry["second_u32"]) else -1
+        name_blob = _read_cstring_blob(tail, name_offset)
+        if data_type == 0:
+            data_blob = _read_cstring_blob(tail, data_offset)
+        else:
+            data_blob = tail[data_offset : data_offset + value_u16 * 4] if data_offset >= 0 else b""
+        semantic_entries.append(
+            {
+                "type": data_type,
+                "value_u16": value_u16,
+                "suffix_hex": _bytes_to_json(suffix),
+                "name_blob": name_blob,
+                "data_blob": data_blob,
+            }
+        )
+
+    numeric_payload = bytearray()
+    numeric_offsets: dict[int, int] = {}
+    for index, entry in enumerate(semantic_entries):
+        if entry["type"] == 0:
+            continue
+        numeric_offsets[index] = len(numeric_payload)
+        numeric_payload += _swap_u32_words_blob(entry["data_blob"], src_endian, dst_endian)
+
+    string_payload = bytearray()
+    string_name_offsets: dict[int, int] = {}
+    string_data_offsets: dict[int, int] = {}
+    for index, entry in enumerate(semantic_entries):
+        if entry["type"] == 0:
+            string_data_offsets[index] = len(string_payload)
+            string_payload += entry["data_blob"]
+        string_name_offsets[index] = len(string_payload)
+        string_payload += entry["name_blob"]
+
+    numeric_size = len(numeric_payload)
+    converted_entries: list[dict[str, object]] = []
+    for index, entry in enumerate(semantic_entries):
+        entry_pos = 0x0C + index * 0x0C
+        name_abs = tail_base + numeric_size + string_name_offsets[index]
+        if entry["type"] == 0:
+            data_abs = tail_base + numeric_size + string_data_offsets[index]
+        else:
+            data_abs = tail_base + numeric_offsets[index]
+        converted_entries.append(
+            {
+                "first_u32": name_abs - entry_pos,
+                "second_u32": data_abs - entry_pos if entry["data_blob"] else 0,
+                "value_u16": entry["value_u16"],
+                "suffix_hex": entry["suffix_hex"],
+            }
+        )
+
     return {
         "entry_count": parsed["entry_count"],
         "count_padding_hex": "0000",
-        "entries": parsed["entries"],
-        "tail_hex": _bytes_to_json(_convert_usd1_tail_via_model(tail, src_endian, dst_endian)),
+        "entries": converted_entries,
+        "tail_hex": _bytes_to_json(_pad(bytes(numeric_payload) + bytes(string_payload), _align(len(numeric_payload) + len(string_payload), 4))),
     }
 
 
