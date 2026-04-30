@@ -45,16 +45,18 @@ BCML's converter is still limited, so using other tools to convert those files t
 - `.shknm2`
 - `.shksc`
 - `.shktmrb`
-- `.bflim`*
-- `.bcamanim`**
-- `.bflyt`
+- `.bflim`
+- `.bflan`
+- `.bcamanim`*
+- `.bflyt`**
 
-\*For bflim files, only files that replace the original ones can be converted, not completely new ones.  
+\*`.bcamanim` files are not converted reliably yet. The converter currently attempts direct BFRES platform conversion for them, but tested outputs do not always match stock Switch files, so manual replacement or further format-specific handling may still be required.
 
-\*\*`.bcamanim` files are not converted reliably yet. The converter currently attempts direct BFRES platform conversion for them, but tested outputs do not always match stock Switch files, so manual replacement or further format-specific handling may still be required.
+\*\*`.bflyt` conversion aims for 1:1 output in almost all cases. Known exceptions: `AppMap_00`, `AppPictureBook_00`, `ChangeControllerNN_00` (Switch-only), `MainHardMode_00`, `MainShortCut_00`, `PaAllControllerTipsNN_00`, `PaAllControllerTips_00`, `PaMessageTipsDrcImageNN_00`, `PaMessageTipsDrcImage_00`, `PaMessageTipsDrcImgAmiiboNN_00`, `PaMessageTipsDrcImgAmiibo_00`, `PaSeekPadDecoText_00`, `PaSeekPadScanningLine_00`, `PaTempMeter_00`, `PauseMenuBG_00`, `ShopBtnList5_00`, `SystemWindow_00`.
+
 
 ## Credits 
-- [AboodXD](https://github.com/aboood40091) - BCFSTM-BCFWAV Converter, BNTX Injector, Bflim Extractor
+- [AboodXD](https://github.com/aboood40091) - BCFSTM-BCFWAV Converter, BNTX Injector, Bflim Extractor, LayoutExporterU
 - [NanobotZ](https://github.com/NanobotZ) - bfstpfixer.py
 - [SamusAranX](https://github.com/SamusAranX) - Original bars_extractor.py script
 - [Aaaboy97](https://github.com/Aaaboy97) - Bars repacker script

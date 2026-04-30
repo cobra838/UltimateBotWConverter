@@ -1731,7 +1731,7 @@ def _convert_prt1_tail(tail: bytes, property_count: int, src_endian: str, dst_en
 r"""
 AppMap_00
 AppPictureBook_00
-Only in \UltimateBotWConverter\downloads\test_bflyt\2_Switch_json: ChangeControllerNN_00.json
+Only in Switch: ChangeControllerNN_00
 MainHardMode_00
 MainShortCut_00
 PaAllControllerTipsNN_00 and PaAllControllerTips_00
