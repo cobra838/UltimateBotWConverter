@@ -447,10 +447,6 @@ def inject(tex, tileMode, SRGB, sparseBinding, sparseResidency, oldImageSize, fl
     #     print('A bflim exported with a big DDS filesize!\nUsing tiling mode "Linear"...')
     #     return inject(tex, 1, SRGB, sparseBinding, sparseResidency, oldImageSize, flim)
 
-    if surfSize > oldImageSize:
-        print("Injected BFLIM is larger than the target BNTX slot!")
-        return False
-
     result = []
     surfSize = 0
     mipOffsets = {}
@@ -513,8 +509,14 @@ def inject(tex, tileMode, SRGB, sparseBinding, sparseResidency, oldImageSize, fl
     return tex
 
 
-def writeTex(file, tex, oldImageSize, oldNumMips):
-    compSel = tex.compSel[0] << 24 | tex.compSel[1] << 16 | tex.compSel[2] << 8 | tex.compSel[3]
+def _pack_texture_info(tex):
+    compSelValues = tex.compSel2 if hasattr(tex, "compSel2") else tex.compSel
+    compSel = (
+        compSelValues[0] << 24
+        | compSelValues[1] << 16
+        | compSelValues[2] << 8
+        | compSelValues[3]
+    )
 
     if not tex.readTexLayout:
         textureLayout = 0
@@ -522,7 +524,7 @@ def writeTex(file, tex, oldImageSize, oldNumMips):
     else:
         textureLayout = tex.sparseResidency << 5 | tex.sparseBinding << 4 | tex.blockHeightLog2
 
-    infoHead = TextureInfo(tex.bom).pack(
+    return TextureInfo(tex.bom).pack(
         tex.sparseResidency << 2 | tex.sparseBinding << 1 | tex.readTexLayout,
         tex.dim,
         tex.tileMode,
@@ -551,18 +553,72 @@ def writeTex(file, tex, oldImageSize, oldNumMips):
         tex.info.userDictAddr,
     )
 
-    globals.fileData[tex.infoAddr:tex.infoAddr + 144] = infoHead
 
-    ptrs = bytearray(oldNumMips * 8)
+def writeTex(file, tex, oldImageSize, oldNumMips):
+    fname, target, textures = read(file)
+    textures[tex.name] = tex
 
-    for mipLevel in tex.mipOffsets:
-        mipOffset = tex.mipOffsets[mipLevel]
-        ptrs[mipLevel * 8:mipLevel * 8 + 8] = struct.pack(tex.bom + 'q', tex.dataAddr + mipOffset)
+    ordered_textures = sorted(textures.values(), key=lambda t: t.dataAddr)
+    fileData = bytearray(globals.fileData)
 
-    globals.fileData[tex.info.ptrsAddr:tex.info.ptrsAddr + oldNumMips * 8] = ptrs
+    if fileData[0xc:0xe] == b'\xFF\xFE':
+        bom = '<'
+    else:
+        bom = '>'
 
-    data = b''.join([tex.data, b'\0' * (oldImageSize - tex.imageSize)])
-    globals.fileData[tex.dataAddr:tex.dataAddr + oldImageSize] = data
+    header = BNTXHeader(bom)
+    header.data(fileData, 0)
+
+    texContainer = TexContainer(bom)
+    texContainer.data(fileData, header.size)
+
+    data_block_start = texContainer.dataBlkAddr + BlockHeader(bom).size
+    old_reloc_addr = header.relocAddr
+
+    rebuilt_data = bytearray()
+
+    for curr_tex in ordered_textures:
+        padding = round_up(len(rebuilt_data), curr_tex.alignment) - len(rebuilt_data)
+        if padding > 0:
+            rebuilt_data.extend(b'\0' * padding)
+
+        curr_tex.dataAddr = data_block_start + len(rebuilt_data)
+        rebuilt_data.extend(curr_tex.data)
+
+    new_reloc_addr = round_up(data_block_start + len(rebuilt_data), 0x1000)
+    data_padding = new_reloc_addr - (data_block_start + len(rebuilt_data))
+    if data_padding > 0:
+        rebuilt_data.extend(b'\0' * data_padding)
+
+    suffix = fileData[old_reloc_addr:header.fileSize]
+    new_file = bytearray(fileData[:data_block_start])
+    new_file.extend(rebuilt_data)
+    new_file.extend(suffix)
+
+    new_file_size = len(new_file)
+
+    for curr_tex in ordered_textures:
+        infoHead = _pack_texture_info(curr_tex)
+        new_file[curr_tex.infoAddr:curr_tex.infoAddr + 144] = infoHead
+
+        ptr_count = curr_tex.info.numMips
+        ptrs = bytearray(ptr_count * 8)
+        for mipLevel in curr_tex.mipOffsets:
+            mipOffset = curr_tex.mipOffsets[mipLevel]
+            ptrs[mipLevel * 8:mipLevel * 8 + 8] = struct.pack(curr_tex.bom + 'q', curr_tex.dataAddr + mipOffset)
+        new_file[curr_tex.info.ptrsAddr:curr_tex.info.ptrsAddr + ptr_count * 8] = ptrs
+
+    data_block_header = BlockHeader(bom)
+    data_block_header.data(new_file, texContainer.dataBlkAddr)
+    rebuilt_block_size = new_reloc_addr - texContainer.dataBlkAddr
+    new_file[texContainer.dataBlkAddr:texContainer.dataBlkAddr + data_block_header.size] = BlockHeader(bom).pack(
+        data_block_header.magic,
+        data_block_header.nextBlkAddr,
+        rebuilt_block_size,
+    )
+
+    new_file[0x18:0x18 + 4] = struct.pack(bom + 'I', new_reloc_addr)
+    new_file[0x1C:0x1C + 4] = struct.pack(bom + 'I', new_file_size)
 
     with open(file, "wb+") as out:
-        out.write(globals.fileData)
+        out.write(new_file)
