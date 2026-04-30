@@ -30,6 +30,16 @@ from .bflim_convertor import bntx_dds_injector as bntx
 import oead
 
 SCRIPT: Path = Path(__file__).parent
+LAYOUT_EXPORTER_U_DIR = SCRIPT / "LayoutExporterU"
+
+def convert_bflan_layoutu(file: Path) -> None:
+    path = str(LAYOUT_EXPORTER_U_DIR)
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    import bflan as layoutu_bflan
+
+    layoutu_bflan.toVersion(file.read_bytes(), str(file), 0x08000000)
+
 
 # Import dll libraries
 BFRES_DLL = SCRIPT / "dotnet_libs" / "BfresLibrary"
@@ -868,11 +878,11 @@ def convert_bflim(sblarc: Path, pack_name: str) -> None:
         _cleanup_temp_extract_path(blarc_path)
 
 def convert_bflyt_sblarc(sblarc: Path) -> None:
-    # Convert bflyt files inside a WiiU sblarc
+    # Convert bflyt/bflan files inside a WiiU sblarc
     blarc = oead.Sarc(util.unyaz_if_needed(sblarc.read_bytes()))
     blarc_path = _get_temp_extract_path(sblarc)
 
-    if any("bflyt" in i.name for i in blarc.get_files()):
+    if any(i.name.endswith((".bflyt", ".bflan")) for i in blarc.get_files()):
         extract_sarc(blarc, blarc_path, sblarc)
         try:
             for bflyt in blarc_path.rglob('*.bflyt'):
@@ -880,6 +890,13 @@ def convert_bflyt_sblarc(sblarc: Path) -> None:
                     convert_bflyt(bflyt)
                 except Exception as err:
                     logging.warning(f"{bflyt.relative_to(blarc_path)} could not be converted")
+                    logging.debug(err, exc_info=True)
+
+            for bflan in blarc_path.rglob('*.bflan'):
+                try:
+                    convert_bflan_layoutu(bflan)
+                except Exception as err:
+                    logging.warning(f"{bflan.relative_to(blarc_path)} could not be converted")
                     logging.debug(err, exc_info=True)
 
             write_sarc(blarc, blarc_path, sblarc)
