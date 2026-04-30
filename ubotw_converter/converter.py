@@ -838,36 +838,25 @@ def convert_bflim(sblarc: Path, pack_name: str) -> None:
     # Convert bflim files inside a WiiU sblarc
     blarc = oead.Sarc(util.unyaz_if_needed(sblarc.read_bytes()))
     blarc_path = _get_temp_extract_path(sblarc)
-    stock_blarc = None
 
     if any("bflim" in i.name for i in blarc.get_files()):
         # Get the pack file where the sblarc comes from
         stock_pack = util.get_game_file(f"Pack/{pack_name}")
-
-        if pack_name == "Bootup.pack":
-            # If the sblarc is in Bootup.pack, get a stock Common.sblarc
-            stock_sblarc = oead.Sarc(stock_pack.read_bytes()).get_file("Layout/Common.sblarc")
-            stock_blarc = oead.Sarc(util.unyaz_if_needed(stock_sblarc.data))
-
-        elif pack_name == "Title.pack":
-            # If the sblarc is in Title.pack, get a stock Title.sblarc
-            stock_sblarc = oead.Sarc(stock_pack.read_bytes()).get_file("Layout/Title.sblarc")
-            stock_blarc = oead.Sarc(util.unyaz_if_needed(stock_sblarc.data))
-
-        # Get a stock bntx file
+        stock_sblarc = oead.Sarc(util.unyaz_if_needed(stock_pack.read_bytes())).get_file(f"Layout/{sblarc.name}")
+        if not isinstance(stock_sblarc, oead.File):
+            raise FileNotFoundError(f"Layout/{sblarc.name} was not found in stock {pack_name}.")
+        stock_blarc = oead.Sarc(util.unyaz_if_needed(stock_sblarc.data))
         bntx_file = stock_blarc.get_file("timg/__Combined.bntx")
-        if stock_blarc:
-            # For stock system UI archives, keep the stock Switch layout as the
-            # base and only inject converted textures into the combined BNTX.
-            extract_sarc(stock_blarc, blarc_path, sblarc)
-        else:
-            extract_sarc(blarc, blarc_path, sblarc)
+        extract_sarc(blarc, blarc_path, sblarc)
         Path(blarc_path / bntx_file.name).write_bytes(bntx_file.data)
 
         for bflim in blarc_path.rglob('*.bflim'):
             try:
                 # Inject every bflim found into the bntx file
-                bntx.tex_inject(blarc_path / bntx_file.name, bflim)
+                injected = bntx.tex_inject(blarc_path / bntx_file.name, bflim)
+                if not injected:
+                    logging.warning(f"{bflim.relative_to(blarc_path)} could not be converted")
+                    continue
                 Path(bflim).unlink()
             except Exception as err:
                 logging.warning(f"{bflim.relative_to(blarc_path)} could not be converted")
@@ -950,9 +939,6 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
         pack_path = _get_temp_extract_path(file)
         if any(splitext(i.name)[1] in SUPPORTED for i in pack.get_files()):
             try:
-                if file.name in {"Bootup.pack", "Title.pack"}:
-                    stock_pack = oead.Sarc(util.unyaz_if_needed(util.get_game_file(f"Pack/{file.name}").read_bytes()))
-                    extract_sarc(stock_pack, pack_path, file)
                 extract_sarc(pack, pack_path, file)
                 new_files = pack_path.rglob('*.*')
                 for new in new_files:
@@ -973,12 +959,8 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
         else:
             # Convert bflim files inside of sblarc files
             convert_bflim(file, mod_path.name)
-            if not (
-                (mod_path.name == "Bootup.pack" and file.name == "Common.sblarc")
-                or (mod_path.name == "Title.pack" and file.name == "Title.sblarc")
-            ):
-                # Convert bflyt files inside of sblarc files
-                convert_bflyt_sblarc(file)
+            # Convert bflyt files inside of sblarc files
+            convert_bflyt_sblarc(file)
 
     elif file.suffix in HAVOK_EXT:
         # Convert havok files

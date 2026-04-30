@@ -447,6 +447,10 @@ def inject(tex, tileMode, SRGB, sparseBinding, sparseResidency, oldImageSize, fl
     #     print('A bflim exported with a big DDS filesize!\nUsing tiling mode "Linear"...')
     #     return inject(tex, 1, SRGB, sparseBinding, sparseResidency, oldImageSize, flim)
 
+    if surfSize > oldImageSize:
+        print("Injected BFLIM is larger than the target BNTX slot!")
+        return False
+
     result = []
     surfSize = 0
     mipOffsets = {}
