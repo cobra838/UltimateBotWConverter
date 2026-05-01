@@ -786,7 +786,45 @@ def convert_havok(hkx: Path) -> None:
     readwrite.chmod(0o755)
     work_hkx.write_bytes(raw_bytes)
     try:
-        run([str(readwrite), str(work_hkx)])
+        result = run(
+            [str(readwrite), str(work_hkx)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        if result.returncode != 0:
+            if stdout:
+                logger.error(
+                    "ReadWrite.exe stdout for %s:\n%s",
+                    hkx.as_posix(),
+                    stdout,
+                )
+            if stderr:
+                logger.error(
+                    "ReadWrite.exe stderr for %s:\n%s",
+                    hkx.as_posix(),
+                    stderr,
+                )
+            raise RuntimeError(
+                f"ReadWrite.exe failed for {hkx.name} with exit code {result.returncode}"
+            )
+        if not out_hkx.exists():
+            if stdout:
+                logger.error(
+                    "ReadWrite.exe stdout for %s:\n%s",
+                    hkx.as_posix(),
+                    stdout,
+                )
+            if stderr:
+                logger.error(
+                    "ReadWrite.exe stderr for %s:\n%s",
+                    hkx.as_posix(),
+                    stderr,
+                )
+            raise FileNotFoundError(f"ReadWrite.exe did not produce output file for {hkx.name}")
         out_bytes = out_hkx.read_bytes()
         hkx.write_bytes(oead.yaz0.compress(out_bytes) if compress_back else out_bytes)
     finally:
