@@ -49,6 +49,7 @@ BCML's converter is still limited, so using other tools to convert those files t
 - `.bflan`
 - `.bcamanim`*
 - `.bflyt`**
+- `.sbeco`
 
 \*`.bcamanim` files are not converted reliably yet. The converter currently attempts direct BFRES platform conversion for them, but tested outputs do not always match stock Switch files, so manual replacement or further format-specific handling may still be required.
 

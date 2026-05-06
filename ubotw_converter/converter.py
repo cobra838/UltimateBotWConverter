@@ -27,6 +27,7 @@ from bcml import util
 from .bars_py import bars, bcf_converter
 from .bflyt import convert_bflyt
 from .bflim_convertor import bntx_dds_injector as bntx
+from .sbeco import convert_to_little_endian as convert_sbeco_bytes
 import oead
 
 SCRIPT: Path = Path(__file__).parent
@@ -51,7 +52,7 @@ from BfresLibrary import ResFile
 from BfresLibrary.PlatformConverters import ConverterHandle
 
 # Supported formats
-SUPPORTED = [".sbfres", ".sbitemico", ".hkcl", ".hkrg", ".hkrb", ".shknm2", ".shksc", ".shktmrb", ".bars", ".bfstm", ".bflim", ".bflyt", ".sblarc", ".bcamanim"]
+SUPPORTED = [".sbfres", ".sbitemico", ".hkcl", ".hkrg", ".hkrb", ".shknm2", ".shksc", ".shktmrb", ".bars", ".bfstm", ".bflim", ".bflyt", ".sblarc", ".bcamanim", ".sbeco"]
 
 BFRES_EXT = [".sbfres", ".sbitemico", ".bcamanim"]
 HAVOK_EXT = [".hkcl", ".hkrg", ".hkrb", ".shknm2", ".shksc", ".shktmrb"]
@@ -833,6 +834,13 @@ def convert_havok(hkx: Path) -> None:
         if work_hkx != hkx and work_hkx.exists():
             work_hkx.unlink()
 
+def convert_sbeco(sbeco: Path) -> None:
+    raw_bytes = sbeco.read_bytes()
+    compressed = raw_bytes[:4] == b"Yaz0"
+    beco_bytes = util.unyaz_if_needed(raw_bytes)
+    converted = convert_sbeco_bytes(beco_bytes)
+    sbeco.write_bytes(oead.yaz0.compress(converted) if compressed else converted)
+
 def get_stock_bfstp(bfstp_name: str, bars_file: Path):
     # Look for the bars file containing the bfstp
     try:
@@ -983,6 +991,11 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
         file.write_bytes(bytes(new_bfstm))
         print("Successfully converted " + file.name + "!")
 
+    elif file.suffix == ".sbeco":
+        # Convert BECO coordinate maps from Wii U big endian to Switch little endian.
+        convert_sbeco(file)
+        print("Successfully converted " + file.name + "!")
+
     elif file.suffix == ".bflyt":
         # Convert layout files
         convert_bflyt(file)
@@ -1038,6 +1051,14 @@ def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
         try:
             if ".Tex2" in file.suffixes and Path(str(file).replace("Tex2", "Tex1")).exists():
                 return
+            change_platform(file, mod_path, root_mod_path)
+        except Exception as err:
+            logger.warning(f"{_format_conversion_target(file, mod_path)} could not be converted")
+            logger.debug(err, exc_info=True)
+        return
+
+    if file.suffix == ".sbeco":
+        try:
             change_platform(file, mod_path, root_mod_path)
         except Exception as err:
             logger.warning(f"{_format_conversion_target(file, mod_path)} could not be converted")
