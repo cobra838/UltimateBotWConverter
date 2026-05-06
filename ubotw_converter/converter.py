@@ -8,6 +8,7 @@ from zipfile import ZipFile
 from platform import system 
 from json import dumps, loads
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from multiprocessing import get_context
 from typing import Iterator, Optional, Union
 from hashlib import sha1
@@ -77,6 +78,8 @@ logger = logging.getLogger(__name__)
 WRAPPER_STATE_FILE = "__wrapper_state__"
 SOURCE_PATH_FILE = "__source_path__"
 CONSUMED_TEX_DIR = "__consumed_tex__"
+NON_BNP_ARCHIVE_EXT = {".zip", ".rar", ".7z"}
+UKMM_META_FILES = {"manifest.yml", "meta.yml"}
 
 # Keep `.sesetlist` in BCML's unsupported set so event-pack extraction still
 # falls back to stock Switch payloads for unmodified files. The PTCL post-pass
@@ -202,6 +205,48 @@ def _remove_dummy_byml_placeholders(mod_path: Path) -> None:
     for file in mod_path.rglob("dummy.byml"):
         if file.is_file():
             file.unlink()
+
+
+def _contains_ukmm_metadata(path: Path) -> bool:
+    return any(
+        file.is_file() and file.name.lower() in UKMM_META_FILES
+        for file in path.rglob("*")
+    )
+
+
+def _extract_non_bnp_input(mod: Path) -> tuple[Path, TemporaryDirectory]:
+    temp = TemporaryDirectory()
+    root = Path(temp.name)
+
+    if mod.is_dir():
+        copied = root / mod.name
+        shutil.copytree(mod, copied)
+        return copied, temp
+
+    if mod.suffix.lower() not in NON_BNP_ARCHIVE_EXT:
+        temp.cleanup()
+        raise ValueError(f"Unsupported input file: {mod}")
+
+    result = run(
+        [util.get_7z_path(), "x", str(mod), f"-o{str(root)}"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        temp.cleanup()
+        raise RuntimeError(f"Could not extract archive: {mod}")
+
+    return root, temp
+
+
+def _find_mod_roots(root: Path) -> list[Path]:
+    return [
+        folder
+        for folder in (root, *[path for path in root.rglob("*") if path.is_dir()])
+        if (folder / "content").is_dir() or (folder / "aoc").is_dir()
+    ]
 
 
 def _get_scope_root(file: Path, root_mod_path: Optional[Path]) -> Optional[Path]:
@@ -579,10 +624,11 @@ def _format_conversion_target(file: Path, mod_path: Path) -> str:
 
 def _cleanup_temp_extract_path(path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
-    try:
-        path.parent.rmdir()
-    except OSError:
-        pass
+    for parent in (path.parent, path.parent.parent):
+        try:
+            parent.rmdir()
+        except OSError:
+            pass
 
 
 def _find_section_offsets(data: bytes, magic: bytes) -> list[int]:
@@ -949,7 +995,7 @@ def convert_bflyt_sblarc(sblarc: Path) -> None:
         finally:
             _cleanup_temp_extract_path(blarc_path)
 
-def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> None:
+def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None, force_convert: bool = False) -> None:
     if file.suffix in BFRES_EXT:
         # Convert FRES files
         if ".Tex2" not in file.suffixes or not Path(str(file).replace("Tex2", "Tex1")).exists():
@@ -1011,7 +1057,7 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
                 new_files = pack_path.rglob('*.*')
                 for new in new_files:
                     try:
-                        convert_files(new, pack_path, root_mod_path or mod_path)
+                        convert_files(new, pack_path, root_mod_path or mod_path, force_convert)
                     except Exception as err:
                         logger.warning(f"{new.relative_to(pack_path)} could not be converted")
                         logger.debug(err, exc_info=True)
@@ -1034,7 +1080,7 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
         # Convert havok files
         convert_havok(file)
 
-def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
+def convert_files(file: Path, mod_path: Path, root_mod_path = None, force_convert: bool = False) -> None:
     if not file.exists() or file.stat().st_size == 0:
         return
 
@@ -1051,7 +1097,7 @@ def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
         try:
             if ".Tex2" in file.suffixes and Path(str(file).replace("Tex2", "Tex1")).exists():
                 return
-            change_platform(file, mod_path, root_mod_path)
+            change_platform(file, mod_path, root_mod_path, force_convert)
         except Exception as err:
             logger.warning(f"{_format_conversion_target(file, mod_path)} could not be converted")
             logger.debug(err, exc_info=True)
@@ -1059,13 +1105,17 @@ def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
 
     if file.suffix == ".sbeco":
         try:
-            change_platform(file, mod_path, root_mod_path)
+            change_platform(file, mod_path, root_mod_path, force_convert)
         except Exception as err:
             logger.warning(f"{_format_conversion_target(file, mod_path)} could not be converted")
             logger.debug(err, exc_info=True)
         return
 
     try:
+        if force_convert:
+            change_platform(file, mod_path, root_mod_path, force_convert)
+            return
+
         canon = util.get_canon_name(file.relative_to(mod_path), allow_no_source=True)
         is_modded = is_file_modded(canon, file.read_bytes())
 
@@ -1109,51 +1159,76 @@ def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
         logger.debug(err, exc_info=True)
 
 def convert(mod: Path) -> None:
-    # Open the mod
-    mod_path = open_mod(mod)
-    temp_extract_root = _get_temp_extract_root(mod_path / "info.json")
+    is_bnp = mod.suffix.lower() == ".bnp"
+    non_bnp_temp = None
+    archive_root = None
+    mod_paths = []
+    temp_extract_roots = []
     try:
-        _clear_consumed_tex_state(mod_path)
-        if (mod_path / "info.json").exists():
-            meta = loads((mod_path / "info.json").read_text("utf-8"))
+        if is_bnp:
+            # Open the mod
+            archive_root = open_mod(mod)
+            mod_paths = [archive_root]
+        else:
+            archive_root, non_bnp_temp = _extract_non_bnp_input(mod)
+            if _contains_ukmm_metadata(archive_root):
+                raise NotImplementedError("UKMM mods are not supported yet")
+            mod_paths = _find_mod_roots(archive_root)
+            if not mod_paths:
+                raise FileNotFoundError(f"No content or aoc directories were found in {mod}")
 
-        if meta["platform"] == "switch":
-            raise NotImplementedError("Ultimate BotW Converter does not support Switch to Wii U conversion")
+        warnings = []
+        for mod_path in mod_paths:
+            temp_extract_root = _get_temp_extract_root(mod_path / "info.json")
+            temp_extract_roots.append(temp_extract_root)
+            _clear_consumed_tex_state(mod_path)
+            if (mod_path / "info.json").exists():
+                meta = loads((mod_path / "info.json").read_text("utf-8"))
 
-        pack_files = []
-        other_files = []
-        for file in mod_path.rglob("*.*"):
-            if "content" in file.parts or "aoc" in file.parts:
-                task = (file, mod_path, mod_path)
-                if "pack" in file.suffix or file.suffix == ".sblarc":
-                    pack_files.append(task)
-                else:
-                    other_files.append(task)
+                if meta["platform"] == "switch":
+                    raise NotImplementedError("Ultimate BotW Converter does not support Switch to Wii U conversion")
 
-        phases = [pack_files, other_files]
+            pack_files = []
+            other_files = []
+            for file in mod_path.rglob("*.*"):
+                if "content" in file.parts or "aoc" in file.parts:
+                    task = (file, mod_path, mod_path, not is_bnp)
+                    if "pack" in file.suffix or file.suffix == ".sblarc":
+                        pack_files.append(task)
+                    else:
+                        other_files.append(task)
 
-        # Convert supported files
-        with util.TempSettingsContext({"wiiu": False}):
-            for files in phases:
-                if not files:
-                    continue
-                if not args.single:
-                    with get_context("spawn").Pool(maxtasksperchild=500) as pool:
-                        pool.starmap(convert_files, files)
-                        pool.close()
-                        pool.join()
-                else:
-                    for file, _, root_mod_path in files:
-                        convert_files(file, mod_path, root_mod_path)
+            phases = [pack_files, other_files]
+
+            # Convert supported files
+            with util.TempSettingsContext({"wiiu": False}):
+                for files in phases:
+                    if not files:
+                        continue
+                    if not args.single:
+                        with get_context("spawn").Pool(maxtasksperchild=500) as pool:
+                            pool.starmap(convert_files, files)
+                            pool.close()
+                            pool.join()
+                    else:
+                        for file, _, root_mod_path, force_convert in files:
+                            convert_files(file, mod_path, root_mod_path, force_convert)
         
-        # Run the mod through BCML's automatic converter 
-        _clear_consumed_tex_state(mod_path)
-        _remove_dummy_byml_placeholders(mod_path)
-        warnings = convert_mod(mod_path, False, True)
-        _recompress_sesetlists_in_mod(mod_path)
+            # Run the mod through BCML's automatic converter 
+            _clear_consumed_tex_state(mod_path)
+            _remove_dummy_byml_placeholders(mod_path)
+            warnings.extend(convert_mod(mod_path, False, True))
+            _recompress_sesetlists_in_mod(mod_path)
 
         # Pack the converted mod into a new bnp
-        out = Path(f'{args.output}.bnp') if args.output else mod.with_name(f"{mod.stem}_switch.bnp")
+        if is_bnp:
+            out = Path(f'{args.output}.bnp') if args.output else mod.with_name(f"{mod.stem}_switch.bnp")
+        elif args.output:
+            out = Path(args.output)
+            if not out.suffix:
+                out = out.with_suffix(".zip")
+        else:
+            out = mod.with_name(f"{mod.stem}_switch.zip")
         if Path(out).exists():
             Path(out).unlink()
 
@@ -1161,7 +1236,7 @@ def convert(mod: Path) -> None:
             util.get_7z_path(),
             "a",
             str(out),
-            f'{str(mod_path / "*")}',
+            f'{str((mod_path if is_bnp else archive_root) / "*")}',
         ]
         run(x_args)
 
@@ -1184,9 +1259,14 @@ def convert(mod: Path) -> None:
 
     finally:
         # Remove the temporary mod_path
-        _clear_consumed_tex_state(mod_path)
-        shutil.rmtree(mod_path, ignore_errors=True)
-        shutil.rmtree(temp_extract_root, ignore_errors=True)
+        for mod_path in mod_paths:
+            _clear_consumed_tex_state(mod_path)
+        if is_bnp and archive_root:
+            shutil.rmtree(archive_root, ignore_errors=True)
+        if non_bnp_temp:
+            non_bnp_temp.cleanup()
+        for temp_extract_root in temp_extract_roots:
+            shutil.rmtree(temp_extract_root, ignore_errors=True)
 
 def main() -> None:
     ERROR_LOG.write_text("", encoding="utf-8")
