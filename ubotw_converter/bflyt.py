@@ -1205,15 +1205,19 @@ def _convert_txt1_parsed(parsed: dict[str, object], src_endian: str, dst_endian:
     label_offset_out = label_offset + 4 if label_offset not in (0, 0xFFFFFFFF) else label_offset
 
     bytes_5c_60 = bytearray(_bytes_from_json(str(parsed["bytes_5c_60_hex"])))
+    has_per_character_transform = bool(bytes_5c_60[2] & 0x10)
     bytes_5c_60[2] = bytes_5c_60[2] | 0x20
 
-    move_a0_to_raw_head = label_offset == 0 and text_offset not in (0, 0xFFFFFFFF) and a0_value != 0
+    move_a0_to_raw_head = has_per_character_transform and label_offset == 0 and text_offset not in (0, 0xFFFFFFFF) and a0_value != 0
 
     raw_payload = bytearray(_bytes_from_json(str(parsed["raw_payload_hex"])))
-    if move_a0_to_raw_head:
-        raw_payload = bytearray(_write_u32(a0_value + 4, dst_endian)) + raw_payload
+    if has_per_character_transform:
+        if move_a0_to_raw_head:
+            raw_payload = bytearray(_write_u32(a0_value + 4, dst_endian)) + raw_payload
+        else:
+            raw_payload = bytearray(_write_u32(a0_value, dst_endian)) + raw_payload
     else:
-        raw_payload = bytearray(_write_u32(a0_value, dst_endian)) + raw_payload
+        raw_payload = bytearray(_write_u32(a0_value, src_endian)) + raw_payload
 
     if text_offset not in (0, 0xFFFFFFFF):
         text_start = text_offset - 0xA4 + 4
