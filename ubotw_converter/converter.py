@@ -270,6 +270,35 @@ def _get_sesetlist_from_pack(pack_path: Path, name: str) -> bytes:
     raise FileNotFoundError(f"{name} not found in {pack_path.name}")
 
 
+def _get_stock_sesetlist_pair(root: Path, source_pack: Path, name: str) -> tuple[bytes, bytes]:
+    candidates = []
+    try:
+        _, stock_wu_pack, stock_sw_pack = _read_stock_pack_pair(root, source_pack)
+        candidates.append((stock_wu_pack, stock_sw_pack))
+    except FileNotFoundError:
+        pass
+
+    inner_stem = Path(name).stem
+    if inner_stem.startswith("Event_"):
+        event_name = inner_stem.replace("Event_", "", 1).replace("_Open", "_0")
+        event_rel = Path("Event") / f"{event_name}.sbeventpack"
+        try:
+            candidates.append((_get_wiiu_game_file(event_rel), util.get_game_file(event_rel)))
+        except FileNotFoundError:
+            pass
+
+    for stock_wu_pack, stock_sw_pack in candidates:
+        try:
+            return (
+                _get_sesetlist_from_pack(stock_wu_pack, name),
+                _get_sesetlist_from_pack(stock_sw_pack, name),
+            )
+        except FileNotFoundError:
+            continue
+
+    raise FileNotFoundError(f"Stock sesetlist base not found for {name}")
+
+
 def _remove_dummy_byml_placeholders(mod_path: Path) -> None:
     for file in mod_path.rglob("dummy.byml"):
         if file.is_file():
@@ -1267,14 +1296,9 @@ def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
                 if source_path_file.exists():
                     original_pack = Path(source_path_file.read_text(encoding="utf-8"))
                     root = root_mod_path or mod_path
-                    try:
-                        _, stock_wu_pack, stock_sw_pack = _read_stock_pack_pair(root, original_pack)
-                    except FileNotFoundError:
-                        return
                     sesetlist_name = file.relative_to(mod_path).as_posix()
                     try:
-                        stock_wu = _get_sesetlist_from_pack(stock_wu_pack, sesetlist_name)
-                        stock_sw = _get_sesetlist_from_pack(stock_sw_pack, sesetlist_name)
+                        stock_wu, stock_sw = _get_stock_sesetlist_pair(root, original_pack, sesetlist_name)
                         converted = bytes(convert_sesetlist(file.read_bytes(), stock_wu, stock_sw))
                         file.write_bytes(converted)
                         _set_wrapper_state(mod_path, sesetlist_name, converted[:4] == b"Yaz0")
