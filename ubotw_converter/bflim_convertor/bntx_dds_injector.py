@@ -14,7 +14,9 @@ def _get_syroot_types():
     import clr
     import System
 
-    dll_path = Path(__file__).resolve().parents[3] / "BfresLibrary" / "Libraries" / "Syroot.NintenTools.NSW.Bntx.dll"
+    dll_path = Path(__file__).resolve().parents[1] / "dotnet_libs" / "Syroot.NintenTools.NSW.Bntx.dll"
+    if not dll_path.exists():
+        raise FileNotFoundError(f"Syroot.NintenTools.NSW.Bntx.dll not found: {dll_path}")
     clr.AddReference(str(dll_path))
 
     from Syroot.NintenTools.NSW.Bntx import BntxFile, Texture, ResDict, UserData

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 from subprocess import run
-from os.path import sep, splitext
+from os.path import sep
 from glob import glob
 from urllib.request import urlopen, urlretrieve
 from io import BytesIO
@@ -28,6 +28,7 @@ from .bars_py import bars, bcf_converter
 from .bflyt import convert_bflyt
 from .bflim_convertor import bntx_dds_injector as bntx
 from .sbeco import convert_to_little_endian as convert_sbeco_bytes
+from .ptcl import convert_sesetlist
 import oead
 
 SCRIPT: Path = Path(__file__).parent
@@ -53,6 +54,7 @@ from BfresLibrary.PlatformConverters import ConverterHandle
 
 # Supported formats
 SUPPORTED = [".sbfres", ".sbitemico", ".hkcl", ".hkrg", ".hkrb", ".shknm2", ".shksc", ".shktmrb", ".bars", ".bfstm", ".bflim", ".bflyt", ".sblarc", ".bcamanim", ".sbeco"]
+COMPATIBLE_EXT = [".bfevfl", ".fxparam"]
 
 BFRES_EXT = [".sbfres", ".sbitemico", ".bcamanim"]
 HAVOK_EXT = [".hkcl", ".hkrg", ".hkrb", ".shknm2", ".shksc", ".shktmrb"]
@@ -77,11 +79,6 @@ logger = logging.getLogger(__name__)
 WRAPPER_STATE_FILE = "__wrapper_state__"
 SOURCE_PATH_FILE = "__source_path__"
 CONSUMED_TEX_DIR = "__consumed_tex__"
-
-# Keep `.sesetlist` in BCML's unsupported set so event-pack extraction still
-# falls back to stock Switch payloads for unmodified files. The PTCL post-pass
-# below then recompresses those restored raw `VFXB` payloads back into the
-# expected Yaz0 wrapper inside event packs.
 
 def is_file_modded(name: str, file: Union[bytes, Path], count_new: bool = True) -> bool:
     table = util.get_hash_table(True)
@@ -116,9 +113,10 @@ def extract_sarc(sarc: oead.Sarc, sarc_path: Path, source_path: Optional[Path] =
     for file in sarc.get_files():
         data = bytes(file.data)
         wrapper_state[file.name] = data[:4] == b"Yaz0"
-        if not Path(sarc_path / file.name).parent.exists():
-            Path(sarc_path / file.name).parent.mkdir(parents=True, exist_ok=True)
-        Path(sarc_path / file.name).write_bytes(data)
+        safe_name = file.name.lstrip("/\\")
+        if not Path(sarc_path / safe_name).parent.exists():
+            Path(sarc_path / safe_name).parent.mkdir(parents=True, exist_ok=True)
+        Path(sarc_path / safe_name).write_bytes(data)
     (Path(sarc_path) / WRAPPER_STATE_FILE).write_text(dumps(wrapper_state), encoding="utf-8")
     if source_path is not None:
         (Path(sarc_path) / SOURCE_PATH_FILE).write_text(str(source_path), encoding="utf-8")
@@ -136,66 +134,140 @@ def write_sarc(sarc: oead.Sarc, sarc_path: Path, sarc_file: Path) -> None:
         if not file.is_file() or file.name in {WRAPPER_STATE_FILE, SOURCE_PATH_FILE}:
             continue
         new_file = file.relative_to(sarc_path).as_posix()
+        if f"/{new_file}" in wrapper_state:
+            new_file = f"/{new_file}"
         data = file.read_bytes()
         if wrapper_state.get(new_file) is True and data[:4] != b"Yaz0":
             data = oead.yaz0.compress(data)
         elif wrapper_state.get(new_file) is False and data[:4] == b"Yaz0":
             data = util.unyaz_if_needed(data)
         new_sarc.files[new_file] = data
-    if sarc_file.suffix == ".pack":
-        sarc_file.write_bytes(new_sarc.write()[1])
+    sarc_data = new_sarc.write()[1]
+    if sarc_file.read_bytes()[:4] == b"Yaz0":
+        sarc_file.write_bytes(oead.yaz0.compress(sarc_data))
     else:
-        sarc_file.write_bytes(oead.yaz0.compress(new_sarc.write()[1]))
+        sarc_file.write_bytes(sarc_data)
 
 
-def _normalize_sesetlist_bytes(data: bytes) -> bytes:
+def _set_wrapper_state(sarc_path: Path, inner_name: str, is_yaz0: bool) -> None:
+    wrapper_state_path = sarc_path / WRAPPER_STATE_FILE
+    if not wrapper_state_path.exists():
+        return
+    wrapper_state = loads(wrapper_state_path.read_text(encoding="utf-8"))
+    if f"/{inner_name}" in wrapper_state:
+        inner_name = f"/{inner_name}"
+    wrapper_state[inner_name] = is_yaz0
+    wrapper_state_path.write_text(dumps(wrapper_state), encoding="utf-8")
+
+
+def _unwrap_yaz0_for_magic(data: bytes) -> bytes:
+    if data[:4] != b"Yaz0":
+        return data
+    return util.unyaz_if_needed(data)
+
+
+def _get_inner_magic(data: bytes) -> bytes:
+    try:
+        return _unwrap_yaz0_for_magic(data)[:4]
+    except Exception:
+        return data[:4]
+
+
+def _detect_content_format(data: bytes) -> Optional[str]:
+    try:
+        inner = _unwrap_yaz0_for_magic(data)
+    except Exception:
+        inner = data
+
+    magic = inner[:4]
+    if inner[:8] in (b"\x57\xe0\xe0\x57\x10\xc0\xc0\x10",):
+        return "havok"
+    if magic == b"FRES":
+        return "bfres"
+    if magic == b"SARC":
+        return "sarc"
+    if magic == b"BFEV":
+        return ".bfevfl"
+    if magic == b"<?xm":
+        return "xml"
+    # if magic == b"XLNK":
+    #     return "xlink"
+    # if magic == b"AGST":
+    #     return "bagst"
+    # if magic == b"Gfx2":
+    #     return "layout_shader"
+    if magic in (b"AAMP", b"\x00\x00\x00\x04"):
+        return "aamp"
+    if magic == b"BARS":
+        return "bars"
+    if magic in (b"FSTM", b"CSTM"):
+        return "bfstm"
+    if magic == b"FLYT":
+        return "bflyt"
+    if magic == b"FLAN":
+        return "bflan"
+    if magic[:2] in (b"BY", b"YB"):
+        try:
+            oead.byml.from_binary(inner)
+            return "byml"
+        except Exception:
+            return None
+    if magic in (b"\x00\x11\x22\x33", b"\x33\x22\x11\x00"):
+        try:
+            convert_sbeco_bytes(inner)
+            return "beco"
+        except Exception:
+            return None
+    return None
+
+
+def _should_convert_by_content(data: bytes) -> bool:
+    content_format = _detect_content_format(data)
+    return (
+        content_format is not None
+        and content_format != "aamp"
+        and content_format != "xml"
+        and content_format not in COMPATIBLE_EXT
+    )
+
+
+def _get_game_rel(file: Path, root: Path) -> Optional[Path]:
+    for folder in ("content", "aoc"):
+        base = root / folder
+        try:
+            return file.relative_to(base)
+        except ValueError:
+            continue
+    return None
+
+
+def _read_stock_pack_pair(root: Path, source_path: Path) -> tuple[Path, Path, Path]:
+    pack_rel = _get_game_rel(source_path, root)
+    if pack_rel is None:
+        raise FileNotFoundError(f"Unable to resolve stock pack for {source_path}")
+    return pack_rel, _get_wiiu_game_file(pack_rel), util.get_game_file(pack_rel)
+
+
+def _get_wiiu_game_file(rel) -> Path:
+    """Return Path to a WiiU stock file without using TempSettingsContext."""
+    settings = util.get_settings()
+    for key in ("update_dir", "game_dir"):
+        base = settings.get(key)
+        if base:
+            p = Path(base) / rel
+            if p.exists():
+                return p
+    raise FileNotFoundError(f"WiiU stock file not found: {rel}")
+
+
+def _get_sesetlist_from_pack(pack_path: Path, name: str) -> bytes:
+    data = pack_path.read_bytes()
     if data[:4] == b"Yaz0":
-        return data
-    if data[:4] in {b"EFTB", b"VFXB"}:
-        return oead.yaz0.compress(data)
-    return data
-
-
-def _recompress_sesetlist_sarc_bytes(data: bytes, compress_outer: bool) -> bytes:
-    sarc = oead.Sarc(util.unyaz_if_needed(data))
-    writer = oead.SarcWriter.from_sarc(sarc)
-    changed = False
-
-    for file in sarc.get_files():
-        file_data = bytes(file.data)
-        ext = Path(file.name).suffix
-        if ext == ".sesetlist":
-            normalized = _normalize_sesetlist_bytes(file_data)
-            if normalized != file_data:
-                writer.files[file.name] = normalized
-                changed = True
-        elif ext in {".sbeventpack", ".beventpack", ".sarc", ".pack", ".sblarc"}:
-            nested_data = _recompress_sesetlist_sarc_bytes(
-                file_data, compress_outer=ext.startswith(".s") and ext != ".sarc"
-            )
-            if nested_data != file_data:
-                writer.files[file.name] = nested_data
-                changed = True
-
-    if not changed:
-        return data
-
-    out = writer.write()[1]
-    return oead.yaz0.compress(out) if compress_outer else out
-
-
-def _recompress_sesetlists_in_mod(mod_path: Path) -> None:
-    for file in mod_path.rglob("*.*"):
-        if not file.is_file():
-            continue
-        ext = file.suffix
-        if ext not in {".sbeventpack", ".beventpack"}:
-            continue
-        new_data = _recompress_sesetlist_sarc_bytes(
-            file.read_bytes(), compress_outer=ext.startswith(".s") and ext != ".sarc"
-        )
-        if new_data != file.read_bytes():
-            file.write_bytes(new_data)
+        data = oead.yaz0.decompress(data)
+    for f in oead.Sarc(data).get_files():
+        if f.name == name:
+            return bytes(f.data)
+    raise FileNotFoundError(f"{name} not found in {pack_path.name}")
 
 
 def _remove_dummy_byml_placeholders(mod_path: Path) -> None:
@@ -841,6 +913,15 @@ def convert_sbeco(sbeco: Path) -> None:
     converted = convert_sbeco_bytes(beco_bytes)
     sbeco.write_bytes(oead.yaz0.compress(converted) if compressed else converted)
 
+
+def convert_byml_file(byml_file: Path) -> None:
+    raw_bytes = byml_file.read_bytes()
+    compressed = raw_bytes[:4] == b"Yaz0"
+    byml = oead.byml.from_binary(util.unyaz_if_needed(raw_bytes))
+    converted = oead.byml.to_binary(byml, big_endian=False)
+    byml_file.write_bytes(util.compress(converted) if compressed else converted)
+
+
 def get_stock_bfstp(bfstp_name: str, bars_file: Path):
     # Look for the bars file containing the bfstp
     try:
@@ -949,13 +1030,40 @@ def convert_bflyt_sblarc(sblarc: Path) -> None:
         finally:
             _cleanup_temp_extract_path(blarc_path)
 
+def warn_unhandled_sblarc_files(sblarc: Path) -> None:
+    blarc = oead.Sarc(util.unyaz_if_needed(sblarc.read_bytes()))
+    blarc_path = _get_temp_extract_path(sblarc)
+
+    extract_sarc(blarc, blarc_path, sblarc)
+    try:
+        for file in blarc_path.rglob("*"):
+            if (
+                not file.is_file()
+                or file.name in {WRAPPER_STATE_FILE, SOURCE_PATH_FILE}
+                or file.suffix in {".bflim", ".bflyt", ".bflan", ".bntx"}
+            ):
+                continue
+
+            content_format = _detect_content_format(file.read_bytes())
+            if content_format == "aamp" or content_format in COMPATIBLE_EXT:
+                continue
+
+            content_label = content_format or f"magic {_get_inner_magic(file.read_bytes()).hex()} / extension {file.suffix or '<none>'}"
+            logging.warning(
+                f"{sblarc.name} -> {file.relative_to(blarc_path)} could not be converted: no converter for {content_label}; file was left unchanged"
+            )
+    finally:
+        _cleanup_temp_extract_path(blarc_path)
+
 def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> None:
-    if file.suffix in BFRES_EXT:
+    content_format = _detect_content_format(file.read_bytes())
+
+    if file.suffix in BFRES_EXT or content_format == "bfres":
         # Convert FRES files
         if ".Tex2" not in file.suffixes or not Path(str(file).replace("Tex2", "Tex1")).exists():
             convert_bfres(file, mod_path, root_mod_path)
 
-    elif file.suffix == ".bars":
+    elif file.suffix == ".bars" or content_format == "bars":
         # Convert bars files
         bars_bytes = bytearray(file.read_bytes())
         tracks, offsets = bars.get_bars_tracks(bars_bytes)
@@ -985,40 +1093,50 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
         file.write_bytes(bytes(new_bars))
         print("Successfully converted " + file.name + "!")
 
-    elif file.suffix == ".bfstm":
+    elif file.suffix == ".bfstm" or content_format == "bfstm":
         # Convert BFSTM files
         new_bfstm = bcf_converter.conv_file(file.read_bytes(), "FSTM", '<')
         file.write_bytes(bytes(new_bfstm))
         print("Successfully converted " + file.name + "!")
 
-    elif file.suffix == ".sbeco":
+    elif file.suffix == ".sbeco" or content_format == "beco":
         # Convert BECO coordinate maps from Wii U big endian to Switch little endian.
         convert_sbeco(file)
         print("Successfully converted " + file.name + "!")
 
-    elif file.suffix == ".bflyt":
+    elif file.suffix == ".bflyt" or content_format == "bflyt":
         # Convert layout files
         convert_bflyt(file)
         print("Successfully converted " + file.name + "!")
 
-    elif "pack" in file.suffix and file.suffix != ".sbquestpack":
+    elif file.suffix == ".bflan" or content_format == "bflan":
+        convert_bflan_layoutu(file)
+        print("Successfully converted " + file.name + "!")
+
+    elif content_format == "byml":
+        convert_byml_file(file)
+        print("Successfully converted " + file.name + "!")
+
+    elif (
+        ("pack" in file.suffix and file.suffix != ".sbquestpack")
+        or (file.suffix != ".sblarc" and content_format == "sarc")
+    ):
         # Convert files inside of pack files
         pack = oead.Sarc(util.unyaz_if_needed(file.read_bytes()))
         pack_path = _get_temp_extract_path(file)
-        if any(splitext(i.name)[1] in SUPPORTED for i in pack.get_files()):
-            try:
-                extract_sarc(pack, pack_path, file)
-                new_files = pack_path.rglob('*.*')
-                for new in new_files:
-                    try:
-                        convert_files(new, pack_path, root_mod_path or mod_path)
-                    except Exception as err:
-                        logger.warning(f"{new.relative_to(pack_path)} could not be converted")
-                        logger.debug(err, exc_info=True)
-                write_sarc(pack, pack_path, file)
-                
-            finally:
-                _cleanup_temp_extract_path(pack_path)
+        try:
+            extract_sarc(pack, pack_path, file)
+            new_files = pack_path.rglob('*.*')
+            for new in new_files:
+                try:
+                    convert_files(new, pack_path, root_mod_path or mod_path)
+                except Exception as err:
+                    logger.warning(f"{new.relative_to(pack_path)} could not be converted")
+                    logger.debug(err, exc_info=True)
+            write_sarc(pack, pack_path, file)
+            
+        finally:
+            _cleanup_temp_extract_path(pack_path)
 
     elif file.suffix == ".sblarc":
         if file.name == "BootUp.sblarc":
@@ -1029,10 +1147,20 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
             convert_bflim(file, mod_path.name)
             # Convert bflyt files inside of sblarc files
             convert_bflyt_sblarc(file)
+            warn_unhandled_sblarc_files(file)
 
-    elif file.suffix in HAVOK_EXT:
+    elif file.suffix in HAVOK_EXT or content_format == "havok":
         # Convert havok files
         convert_havok(file)
+
+    elif file.suffix not in COMPATIBLE_EXT:
+        if content_format in ("aamp", "xml") or content_format in COMPATIBLE_EXT:
+            pass
+        else:
+            magic = _get_inner_magic(file.read_bytes()).hex()
+            raise ValueError(
+                f"No conversion handler for file {file.name} with suffix {file.suffix} and magic {magic}"
+            )
 
 def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
     if not file.exists() or file.stat().st_size == 0:
@@ -1066,43 +1194,69 @@ def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
         return
 
     try:
+        content_format = _detect_content_format(file.read_bytes())
+        if content_format in ("aamp", "xml") or content_format in COMPATIBLE_EXT:
+            return
+        if file.suffix not in COMPATIBLE_EXT and _should_convert_by_content(file.read_bytes()):
+            change_platform(file, mod_path, root_mod_path)
+            return
+    except Exception as err:
+        logger.warning(f"{_format_conversion_target(file, mod_path)} could not be converted")
+        logger.debug(err, exc_info=True)
+        return
+
+    try:
         canon = util.get_canon_name(file.relative_to(mod_path), allow_no_source=True)
         is_modded = is_file_modded(canon, file.read_bytes())
+
+        # Sesetlist: always convert via EMTR patch regardless of is_modded
+        if file.suffix == ".sesetlist":
+            rel = _get_game_rel(file, mod_path)
+            if mod_path.parent != SCRIPT and rel is not None:
+                # Loose sesetlist
+                stock_sw = util.get_game_file(rel)
+                stock_wu = _get_wiiu_game_file(rel)
+                converted = bytes(convert_sesetlist(file.read_bytes(), stock_wu.read_bytes(), stock_sw.read_bytes()))
+                file.write_bytes(converted)
+            else:
+                # Inside extracted SARC (called from change_platform via extract_sarc)
+                source_path_file = mod_path / SOURCE_PATH_FILE
+                if source_path_file.exists():
+                    original_pack = Path(source_path_file.read_text(encoding="utf-8"))
+                    root = root_mod_path or mod_path
+                    try:
+                        _, stock_wu_pack, stock_sw_pack = _read_stock_pack_pair(root, original_pack)
+                    except FileNotFoundError:
+                        return
+                    sesetlist_name = file.relative_to(mod_path).as_posix()
+                    try:
+                        stock_wu = _get_sesetlist_from_pack(stock_wu_pack, sesetlist_name)
+                        stock_sw = _get_sesetlist_from_pack(stock_sw_pack, sesetlist_name)
+                        converted = bytes(convert_sesetlist(file.read_bytes(), stock_wu, stock_sw))
+                        file.write_bytes(converted)
+                        _set_wrapper_state(mod_path, sesetlist_name, converted[:4] == b"Yaz0")
+                    except Exception as err:
+                        logger.debug("sesetlist in pack %s: %s", sesetlist_name, err)
+            return
+
+        handled = False
 
         # Convert supported files
         if is_modded or file.suffix == ".bars": 
             change_platform(file, mod_path, root_mod_path)
+            handled = True
             
-        elif file.suffix in NO_CONVERT_EXTS or file.suffix == ".bcamanim":
-            content_root = mod_path / "content"
-            if mod_path.parent != SCRIPT and content_root.exists() and file.is_relative_to(content_root):
-                stock_file = util.get_game_file(file.relative_to(content_root))
-                file.write_bytes(stock_file.read_bytes())
-            # TODO: Add logic for stock files inside modified packs
-            elif "pack" in mod_path.suffix and mod_path.suffix != ".sbquestpack":
-                try:
-                    stock_pack = util.get_game_file(f"Actor/Pack/{mod_path.name}")
-                except FileNotFoundError:
-                    try:
-                        stock_pack = util.get_game_file(f"Event/{mod_path.name}")
-                    except FileNotFoundError:
-                        try:
-                            stock_pack = util.get_game_file(f"Pack/{mod_path.name}")
-                        except FileNotFoundError:
-                            try:
-                                stock_pack = util.get_game_file(f"Actor/Pack/{file.name.split('.')[0].replace('_A', '')}.sbactorpack")
-                            except FileNotFoundError:
-                                try:
-                                    stock_pack = util.get_game_file(f"Event/{file.name.split('.')[0].replace('Event_', '').replace('_Open', '_0')}.sbeventpack")
-                                except FileNotFoundError:
-                                    change_platform(file, mod_path)
+        elif file.suffix in NO_CONVERT_EXTS:
+            logger.warning(
+                f"{_format_conversion_target(file, mod_path)} is unsupported by the pre-converter and was left unchanged"
+            )
+            handled = True
 
-                if 'stock_pack' in locals():
-                    try:
-                        stock_file = util.get_nested_file_bytes(f"{stock_pack}//{file.relative_to(mod_path).as_posix()}")
-                        file.write_bytes(stock_file)
-                    except:
-                        change_platform(file, mod_path)
+        if not handled and file.suffix not in COMPATIBLE_EXT:
+            content_label = content_format or f"magic {_get_inner_magic(file.read_bytes()).hex()} / extension {file.suffix or '<none>'}"
+            logger.warning(
+                f"{_format_conversion_target(file, mod_path)} could not be converted: no converter for {content_label}; file was left unchanged"
+            )
                 
     except Exception as err:
         logger.warning(f"{_format_conversion_target(file, mod_path)} could not be converted")
@@ -1150,7 +1304,6 @@ def convert(mod: Path) -> None:
         _clear_consumed_tex_state(mod_path)
         _remove_dummy_byml_placeholders(mod_path)
         warnings = convert_mod(mod_path, False, True)
-        _recompress_sesetlists_in_mod(mod_path)
 
         # Pack the converted mod into a new bnp
         out = Path(f'{args.output}.bnp') if args.output else mod.with_name(f"{mod.stem}_switch.bnp")
@@ -1171,12 +1324,12 @@ def convert(mod: Path) -> None:
                 for warning in warnings:
                     # Write BCML's warning to a file    
                     if all(i not in warning for i in SUPPORTED):
-                        if warning.startswith("This mod contains a file not supported by the converter: "):
-                            warning = warning.replace(
-                                "This mod contains a file not supported by the converter: ",
-                                "BCML marked this file as unsupported via NO_CONVERT_EXTS: ",
-                                1,
-                            )
+                        # if warning.startswith("This mod contains a file not supported by the converter: "):
+                        #     warning = warning.replace(
+                        #         "This mod contains a file not supported by the converter: ",
+                        #         "BCML marked this file as unsupported via NO_CONVERT_EXTS: ",
+                        #         1,
+                        #     )
                         logger.warning(warning)
 
     except Exception as err:
