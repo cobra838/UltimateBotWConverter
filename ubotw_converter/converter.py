@@ -54,7 +54,7 @@ from BfresLibrary.PlatformConverters import ConverterHandle
 
 # Supported formats
 SUPPORTED = [".sbfres", ".sbitemico", ".hkcl", ".hkrg", ".hkrb", ".shknm2", ".shksc", ".shktmrb", ".bars", ".bfstm", ".bflim", ".bflyt", ".sblarc", ".bcamanim", ".sbeco"]
-COMPATIBLE_EXT = [".bfevfl", ".fxparam"]
+COMPATIBLE_EXT = [".bfevfl", ".fxparam", ".jpg", ".txt", ".json"]
 
 BFRES_EXT = [".sbfres", ".sbitemico", ".bcamanim"]
 HAVOK_EXT = [".hkcl", ".hkrg", ".hkrb", ".shknm2", ".shksc", ".shktmrb"]
