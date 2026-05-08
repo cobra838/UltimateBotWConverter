@@ -1104,28 +1104,20 @@ def convert_bflyt_sblarc(sblarc: Path) -> None:
 
 def warn_unhandled_sblarc_files(sblarc: Path) -> None:
     blarc = oead.Sarc(util.unyaz_if_needed(sblarc.read_bytes()))
-    blarc_path = _get_temp_extract_path(sblarc)
+    for file in blarc.get_files():
+        suffix = Path(file.name).suffix
+        if suffix in {".bflim", ".bflyt", ".bflan", ".bntx"}:
+            continue
 
-    extract_sarc(blarc, blarc_path, sblarc)
-    try:
-        for file in blarc_path.rglob("*"):
-            if (
-                not file.is_file()
-                or file.name in {WRAPPER_STATE_FILE, SOURCE_PATH_FILE}
-                or file.suffix in {".bflim", ".bflyt", ".bflan", ".bntx"}
-            ):
-                continue
+        data = bytes(file.data)
+        content_format = _detect_content_format(data)
+        if content_format == "aamp" or content_format in COMPATIBLE_EXT:
+            continue
 
-            content_format = _detect_content_format(file.read_bytes())
-            if content_format == "aamp" or content_format in COMPATIBLE_EXT:
-                continue
-
-            content_label = content_format or f"magic {_get_inner_magic(file.read_bytes()).hex()} / extension {file.suffix or '<none>'}"
-            logging.warning(
-                f"{sblarc.name} -> {file.relative_to(blarc_path)} could not be converted: no converter for {content_label}; file was left unchanged"
-            )
-    finally:
-        _cleanup_temp_extract_path(blarc_path)
+        content_label = content_format or f"magic {_get_inner_magic(data).hex()} / extension {suffix or '<none>'}"
+        logging.warning(
+            f"{sblarc.name} -> {file.name} could not be converted: no converter for {content_label}; file was left unchanged"
+        )
 
 def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> None:
     content_format = _detect_content_format(file.read_bytes())
@@ -1203,7 +1195,7 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
                 try:
                     convert_files(new, pack_path, root_mod_path or mod_path)
                 except Exception as err:
-                    logger.warning(f"{new.relative_to(pack_path)} could not be converted")
+                    logger.warning(f"{_format_conversion_target(new, pack_path)} could not be converted")
                     logger.debug(err, exc_info=True)
             write_sarc(pack, pack_path, file)
             
@@ -1265,11 +1257,13 @@ def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
             logger.debug(err, exc_info=True)
         return
 
+    file_data = file.read_bytes()
+
     try:
-        content_format = _detect_content_format(file.read_bytes())
+        content_format = _detect_content_format(file_data)
         if content_format in ("aamp", "xml") or content_format in COMPATIBLE_EXT:
             return
-        if file.suffix not in COMPATIBLE_EXT and _should_convert_by_content(file.read_bytes()):
+        if file.suffix not in COMPATIBLE_EXT and content_format is not None:
             change_platform(file, mod_path, root_mod_path)
             return
     except Exception as err:
@@ -1279,7 +1273,7 @@ def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
 
     try:
         canon = util.get_canon_name(file.relative_to(mod_path), allow_no_source=True)
-        is_modded = is_file_modded(canon, file.read_bytes())
+        is_modded = is_file_modded(canon, file_data)
 
         # Sesetlist: always convert via EMTR patch regardless of is_modded
         if file.suffix == ".sesetlist":
@@ -1288,7 +1282,7 @@ def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
                 # Loose sesetlist
                 stock_sw = util.get_game_file(rel)
                 stock_wu = _get_wiiu_game_file(rel)
-                converted = bytes(convert_sesetlist(file.read_bytes(), stock_wu.read_bytes(), stock_sw.read_bytes()))
+                converted = bytes(convert_sesetlist(file_data, stock_wu.read_bytes(), stock_sw.read_bytes()))
                 file.write_bytes(converted)
             else:
                 # Inside extracted SARC (called from change_platform via extract_sarc)
@@ -1299,10 +1293,13 @@ def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
                     sesetlist_name = file.relative_to(mod_path).as_posix()
                     try:
                         stock_wu, stock_sw = _get_stock_sesetlist_pair(root, original_pack, sesetlist_name)
-                        converted = bytes(convert_sesetlist(file.read_bytes(), stock_wu, stock_sw))
+                        converted = bytes(convert_sesetlist(file_data, stock_wu, stock_sw))
                         file.write_bytes(converted)
                         _set_wrapper_state(mod_path, sesetlist_name, converted[:4] == b"Yaz0")
                     except Exception as err:
+                        logger.warning(
+                            f"{_format_conversion_target(file, mod_path)} could not be converted: {err}"
+                        )
                         logger.debug("sesetlist in pack %s: %s", sesetlist_name, err)
             return
 
@@ -1320,7 +1317,7 @@ def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
             handled = True
 
         if not handled and file.suffix not in COMPATIBLE_EXT:
-            content_label = content_format or f"magic {_get_inner_magic(file.read_bytes()).hex()} / extension {file.suffix or '<none>'}"
+            content_label = content_format or f"magic {_get_inner_magic(file_data).hex()} / extension {file.suffix or '<none>'}"
             logger.warning(
                 f"{_format_conversion_target(file, mod_path)} could not be converted: no converter for {content_label}; file was left unchanged"
             )
