@@ -2,27 +2,20 @@
 A script combining various sources to convert BotW WiiU mods for the Switch version of the game
 
 ## Requirements
-- Python 3.9 (If on Windows, you must check `Add Python to PATH` during installation)
+- [Python 3.9+](https://www.python.org/downloads/release/python-3913/) (You must check `Add Python to PATH` during installation on Windows)
 - [.NET 5.0 Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/5.0/runtime) (required for the [HKX2 ReadWrite Havok converter](https://gitlab.com/HKX2))
-- A legal, unpacked dump of BoTW Switch (1.6.0)
-- [BotW Cross-Platform Mod Loader](https://github.com/NiceneNerd/BCML)
+- [BotW Cross-Platform Mod Loader](https://github.com/NiceneNerd/BCML) (pip install bcml)
 
-For obtaining a BoTW dump, see https://zeldamods.org/wiki/Help:Dumping_games. BCML can be obtained through python's PyPI, using `pip install bcml`
-
-## Installation
-For now, you can install the prerelease by running `pip install ubotw-converter` from a Command-Line Interface (CLI).  
-
-If wanting to install from source, run `pip install -e .` inside the folder where the source code is located 
+- A legal, unpacked dump of BoTW Switch (1.6.0) for bcml. For obtaining a BoTW dump, see https://zeldamods.org/wiki/Help:Dumping_games.
 
 ## Usage
-In a CLI, run `convert_to_switch path/to/your/bnp`, and the conversion process will start. If you encounter problems caused by multi-processing, you can use `convert_to_switch -s path/to/your/bnp` to enable single core. 
 
-You can also run the converter module directly:
-- `python -m ubotw_converter.converter -s "your.bnp" --log-level debug`
+You can run the converter module directly:
+`python -m ubotw_converter.converter -s "your.bnp" --log-level debug`
 
-`-s` runs the converter in single-threaded mode, which can help avoid multiprocessing-related issues.
+- `-s` runs the converter in single-threaded mode, which can help avoid multiprocessing-related issues.
 
-`--log-level debug` currently enables additional validation for converted BFRES files. This is slower, but more reliable for troubleshooting problematic BFRES conversions.
+- `--log-level debug` currently enables additional validation for converted BFRES files. This is slower, but more reliable for troubleshooting problematic BFRES conversions.
 
 On Windows, you can also use:
 - `ubotw_converter\convert.bat "your.bnp"`
@@ -47,13 +40,28 @@ BCML's converter is still limited, so using other tools to convert those files t
 - `.shktmrb`
 - `.bflim`
 - `.bflan`
+- `.sbeco`
 - `.bcamanim`*
 - `.bflyt`**
-- `.sbeco`
 
 \*`.bcamanim` files are not converted reliably yet. The converter currently attempts direct BFRES platform conversion for them, but tested outputs do not always match stock Switch files, so manual replacement or further format-specific handling may still be required.
 
-\*\*`.bflyt` conversion aims for 1:1 output in almost all cases. Known exceptions: `AppMap_00`, `AppPictureBook_00`, `ChangeControllerNN_00` (Switch-only), `MainHardMode_00`, `MainShortCut_00`, `PaAllControllerTipsNN_00`, `PaAllControllerTips_00`, `PaMessageTipsDrcImageNN_00`, `PaMessageTipsDrcImage_00`, `PaMessageTipsDrcImgAmiiboNN_00`, `PaMessageTipsDrcImgAmiibo_00`, `PaSeekPadDecoText_00`, `PaSeekPadScanningLine_00`, `PaTempMeter_00`, `PauseMenuBG_00`, `ShopBtnList5_00`, `SystemWindow_00`.
+\*\*`.bflyt` conversion aims for 1:1 output in almost all cases.  
+Known exceptions:  
+`AppMap_00`, `MainHardMode_00`, `MainShortCut_00`, `PaTempMeter_00`, `PauseMenuBG_00`, `ShopBtnList5_00`, `SystemWindow_00`.  
+Also exceptions:  
+`ChangeControllerNN_00` (Switch-only)  
+`PaAllControllerTipsNN_00` (Switch) - `PaAllControllerTips_00` (WiiU)  
+`PaMessageTipsDrcImageNN_00` (Switch)  - `PaMessageTipsDrcImage_00` (WiiU)  
+`PaMessageTipsDrcImgAmiiboNN_00` (Switch) - `PaMessageTipsDrcImgAmiibo_00` (WiiU)
+
+
+## Installation
+For now, you can install the prerelease by running `pip install ubotw-converter` from a Command-Line Interface (CLI).
+
+If wanting to install from source, run `pip install -e .` inside the folder where the source code is located 
+
+In a CLI, run `convert_to_switch path/to/your/bnp`, and the conversion process will start. If you encounter problems caused by multi-processing, you can use `convert_to_switch -s path/to/your/bnp` to enable single core. 
 
 
 ## Credits 
@@ -62,8 +70,7 @@ BCML's converter is still limited, so using other tools to convert those files t
 - [SamusAranX](https://github.com/SamusAranX) - Original bars_extractor.py script
 - [Aaaboy97](https://github.com/Aaaboy97) - Bars repacker script
 - [KillzXGaming](https://github.com/KillzXGaming) - BfresPlatformConverter, BfresLibrary
-- [krenyy](https://gitlab.com/krenyy) - HKXConvert
-- [HKX2](https://gitlab.com/HKX2) - HKX2Library, ReadWrite
+- [krenyy](https://gitlab.com/krenyy) - HKXConvert, [HKX2](https://gitlab.com/HKX2) (HKX2Library, ReadWrite)
 - [NiceneNerd](https://github.com/NiceneNerd) - BOTW Cross-Platform Mod Loader
 - [Leoetlino](https://github.com/leoetlino) - All his tools for working with BotW files
 - The creators of [Pythonnet](https://github.com/pythonnet)

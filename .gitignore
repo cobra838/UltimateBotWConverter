@@ -5,6 +5,7 @@ AGENTS.md
 _tmp_extract_*
 *.bnp
 
+TEST/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

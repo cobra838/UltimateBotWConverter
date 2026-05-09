@@ -1,18 +1,20 @@
 @echo off
 setlocal enabledelayedexpansion
 cd /d "%~dp0.."
-if "%~1"=="" (
+
+if not "%~1"=="" goto batch_mode
+
 echo No BNP file was provided.
 echo Drag and drop one or more .bnp files onto this script,
 echo or run:
-echo ubotw_converter\convert_single_thread.bat "path\to\your\bnp"
+echo convert_single_thread.bat "path\to\your\bnp"
+:manual_loop
 echo Enter the path to a mod. Use quotes if the path contains spaces:
+set "MANUAL_PATH="
 set /P MANUAL_PATH="> "
 echo.
 if "!MANUAL_PATH!"=="" (
-echo No path was provided.
-pause
-exit /b 1
+exit /b 0
 )
 echo +++++++++++++++++++++++++++
 echo + Ultimate BotW Converter +
@@ -22,9 +24,10 @@ echo Attempting to convert manually entered path, please wait...
 echo.
 python -m ubotw_converter.converter -s !MANUAL_PATH!
 echo.
-pause
-exit /b 0
-)
+echo ===========
+goto manual_loop
+
+:batch_mode
 set /A TOTAL=0
 set /A COUNTER=0
 FOR %%A IN (%*) DO (
@@ -43,4 +46,5 @@ python -m ubotw_converter.converter -s "%%~A"
 echo.
 echo Processed %COUNTER% mods.
 echo.
-pause
+echo ===========
+goto manual_loop
