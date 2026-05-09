@@ -5,6 +5,10 @@ import bflim as BFLIM
 import os
 
 
+def _safe_get(items, index, default=None):
+    return items[index] if 0 <= index < len(items) else default
+
+
 class Vec2:
     def __init__(self):
         self.x = 0
@@ -219,7 +223,7 @@ class TexMap:
         self.magFilter = TexFilter()
 
     def set(self, texMap, textureList):
-        texName = textureList[texMap.texIdx]
+        texName = _safe_get(textureList, texMap.texIdx, f"__missing_tex_{texMap.texIdx}")
         assert len(texName) <= 128
         self.imageName = texName
         self.wrap_s.set(texMap.wrapS)
@@ -784,7 +788,7 @@ class Picture:
         self.detailSetting = True
 
     def set(self, pane, materialList, textureList):
-        material = materialList[pane.materialIdx]
+        material = _safe_get(materialList, pane.materialIdx)
         vtxCols, texCoords = pane.vtxCols, pane.texCoords
 
         self.vtxColLT.set(*vtxCols[0])
@@ -796,6 +800,9 @@ class Picture:
         for texCoord in texCoords:
             self.texCoord.append(TexCoord())
             self.texCoord[-1].set(*texCoord)
+
+        if material is None:
+            return
 
         self.material.set(
             material.color0, material.color1, material.resTexMaps, textureList, material.texSRTs,
@@ -915,8 +922,8 @@ class TextBox:
         self.detailSetting = True
 
     def set(self, pane, materialList, textureList, fontList):
-        material = materialList[pane.materialIdx]
-        font = fontList[pane.fontIdx]
+        material = _safe_get(materialList, pane.materialIdx)
+        font = _safe_get(fontList, pane.fontIdx, f"__missing_font_{pane.fontIdx}.bffnt")
 
         self.fontSize.set(*pane.fontSize)
         self.fontSizeOriginal.set(*pane.fontSize)
@@ -929,17 +936,18 @@ class TextBox:
         y = pane.textPosition & 3
         self.positionType.set(x, y)
 
-        self.material.set(
-            material.color0, material.color1, material.resTexMaps, textureList, material.texSRTs,
-            material.texCoordGen, material.name, material.isThresholdingAlphaInterpolation,
-        )
+        if material is not None:
+            self.material.set(
+                material.color0, material.color1, material.resTexMaps, textureList, material.texSRTs,
+                material.texCoordGen, material.name, material.isThresholdingAlphaInterpolation,
+            )
 
-        self.materialCtr.set(
-            material.color0[:3], material.color1[:3],
-            material.resTexMaps, textureList, material.texSRTs, material.texCoordGen, material.tevStages,
-            material.name, material.indirectParameter, material.alphaCompare,
-            material.blendMode, material.blendModeAlpha, material.blendType,
-        )
+            self.materialCtr.set(
+                material.color0[:3], material.color1[:3],
+                material.resTexMaps, textureList, material.texSRTs, material.texCoordGen, material.tevStages,
+                material.name, material.indirectParameter, material.alphaCompare,
+                material.blendMode, material.blendModeAlpha, material.blendType,
+            )
 
         self.shadowOffset.set(*pane.shadowOffset)
         self.shadowScale.set(*pane.shadowScale)
@@ -1045,7 +1053,7 @@ class WindowContent:
         self.detailSetting = True
 
     def set(self, content, materialList, textureList):
-        material = materialList[content.materialIdx]
+        material = _safe_get(materialList, content.materialIdx)
         vtxCols, texCoords = content.vtxCols, content.texCoords
 
         self.vtxColLT.set(*vtxCols[0])
@@ -1057,6 +1065,9 @@ class WindowContent:
         for texCoord in texCoords:
             self.texCoord.append(TexCoord())
             self.texCoord[-1].set(*texCoord)
+
+        if material is None:
+            return
 
         self.material.set(
             material.color0, material.color1, material.resTexMaps, textureList, material.texSRTs,
@@ -1148,10 +1159,13 @@ class WindowFrame:
         self.detailSetting = True
 
     def set(self, frame, i, materialList, textureList):
-        material = materialList[frame.materialIdx]
+        material = _safe_get(materialList, frame.materialIdx)
 
         self.textureFlip.set(frame.textureFlip)
         self.frameType.set(i)
+
+        if material is None:
+            return
 
         self.material.set(
             material.color0, material.color1, material.resTexMaps, textureList, material.texSRTs,

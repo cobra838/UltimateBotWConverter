@@ -25,7 +25,6 @@ from bcml.install import open_mod, find_modded_files
 from bcml.dev import convert_mod, NO_CONVERT_EXTS
 from bcml import util
 from .bars_py import bars, bcf_converter
-from .bflyt import convert_bflyt
 from .bflim_convertor import bntx_dds_injector as bntx
 from .sbeco import convert_to_little_endian as convert_sbeco_bytes
 from .ptcl import convert_sesetlist
@@ -41,6 +40,15 @@ def convert_bflan_layoutu(file: Path) -> None:
     import bflan as layoutu_bflan
 
     layoutu_bflan.toVersion(file.read_bytes(), str(file), 0x08000000)
+
+
+def convert_bflyt_layoutu(file: Path) -> None:
+    path = str(LAYOUT_EXPORTER_U_DIR)
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    import bflyt as layoutu_bflyt
+
+    layoutu_bflyt.toVersion(file.read_bytes(), str(file), 0x08000000)
 
 
 # Import dll libraries
@@ -1086,7 +1094,7 @@ def convert_bflyt_sblarc(sblarc: Path) -> None:
         try:
             for bflyt in blarc_path.rglob('*.bflyt'):
                 try:
-                    convert_bflyt(bflyt)
+                    convert_bflyt_layoutu(bflyt)
                 except Exception as err:
                     logging.warning(f"{bflyt.relative_to(blarc_path)} could not be converted")
                     logging.debug(err, exc_info=True)
@@ -1170,7 +1178,7 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
 
     elif file.suffix == ".bflyt" or content_format == "bflyt":
         # Convert layout files
-        convert_bflyt(file)
+        convert_bflyt_layoutu(file)
         print("Successfully converted " + file.name + "!")
 
     elif file.suffix == ".bflan" or content_format == "bflan":

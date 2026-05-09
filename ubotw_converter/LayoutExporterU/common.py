@@ -113,6 +113,23 @@ class MaterialName:
         return self.string
 
 
+def _format_user_data_string(value):
+    if isinstance(value, bytes):
+        raw = value
+    elif hasattr(value, 'raw_bytes'):
+        raw = value.raw_bytes
+    else:
+        return str(value)
+
+    parts = []
+    for b in raw:
+        if b in (0x09, 0x0A, 0x0D) or 0x20 <= b <= 0x7E:
+            parts.append(chr(b))
+        else:
+            parts.append('\\x%02X' % b)
+    return ''.join(parts)
+
+
 class UserData:
     class Item:
         def __init__(self):
@@ -127,7 +144,7 @@ class UserData:
             data = userData.data
 
             if type == 0:
-                self.data = ' '.join(data)
+                self.data = ' '.join(_format_user_data_string(value) for value in data)
                 self.type = "string"
 
             elif type == 1:
