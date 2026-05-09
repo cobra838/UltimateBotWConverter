@@ -79,6 +79,7 @@ args = parser.parse_args()
 
 LOG_CONF = SCRIPT / "log.conf"
 ERROR_LOG = SCRIPT / "error.log"
+TEXTURE_LOG = SCRIPT / "texture.log"
 
 # Error logging
 logging.config.fileConfig(fname=LOG_CONF, defaults={"logfilename": ERROR_LOG, "loglevel": args.log_level.upper()})
@@ -438,6 +439,29 @@ def _find_scoped_game_files(scope_root: Path, name: str) -> list[Path]:
     return sorted(candidates, key=rank)
 
 
+def _find_base_model_files(root_mod_path: Path, name: str) -> list[Path]:
+    if not root_mod_path or not root_mod_path.exists():
+        return []
+
+    model_roots = [root_mod_path / "content" / "Model"]
+    aoc_root = root_mod_path / "aoc"
+    if aoc_root.exists():
+        model_roots.extend(path for path in aoc_root.glob("*/Model") if path.is_dir())
+
+    candidates = []
+    for model_root in model_roots:
+        if not model_root.exists():
+            continue
+        candidates.extend(candidate for candidate in model_root.rglob(name) if candidate.is_file())
+
+    def rank(path: Path):
+        rel = path.relative_to(root_mod_path).parts
+        group = 0 if rel[:2] == ("content", "Model") else 1
+        return (group, len(rel), path.as_posix())
+
+    return sorted(candidates, key=rank)
+
+
 def _get_consumed_tex_dir(root_mod_path: Optional[Path]) -> Optional[Path]:
     if not root_mod_path:
         return None
@@ -536,7 +560,41 @@ def _find_external_tex1(file: Path, root_mod_path: Optional[Path]) -> Optional[P
         return None
 
     candidates = _find_scoped_model_files(scope_root, tex1_name)
-    return candidates[0] if candidates else None
+    if candidates:
+        return candidates[0]
+
+    if scope_root != root_mod_path:
+        base_candidates = _find_base_model_files(root_mod_path, tex1_name)
+        return base_candidates[0] if base_candidates else None
+
+    return None
+
+
+def _find_pack_owned_loose_texture_paths(file: Path, root_mod_path: Optional[Path]) -> list[Path]:
+    source_file = _get_extracted_source_path(file) or file
+    scope_root = _get_scope_root(source_file, root_mod_path)
+    if not scope_root:
+        return []
+
+    consumed = []
+    for name in (file.name.replace("Tex2", "Tex1"), file.name):
+        consumed.extend(_find_scoped_model_files(scope_root, name))
+
+    if not consumed and scope_root != root_mod_path:
+        model_name = file.name.replace(".Tex2", "")
+        if _find_base_model_files(root_mod_path, model_name):
+            return []
+        for name in (file.name.replace("Tex2", "Tex1"), file.name):
+            consumed.extend(_find_base_model_files(root_mod_path, name))
+
+    seen = set()
+    unique = []
+    for candidate in consumed:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        unique.append(candidate)
+    return unique
 
 
 def _find_external_bfstm(file: Path, track_name: str, root_mod_path: Optional[Path]) -> Optional[Path]:
@@ -567,18 +625,7 @@ def _get_pack_owned_loose_texture_paths(file: Path, root_mod_path: Optional[Path
     if _find_scoped_model_files(scope_root, model_name):
         return []
 
-    consumed = []
-    for name in (file.name.replace("Tex2", "Tex1"), file.name):
-        consumed.extend(_find_scoped_model_files(scope_root, name))
-
-    seen = set()
-    unique = []
-    for candidate in consumed:
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        unique.append(candidate)
-    return unique
+    return _find_pack_owned_loose_texture_paths(file, root_mod_path)
 
 
 def _merge_external_tex1_with_tex2(tex1_path: Path, tex2_res_file: ResFile, name: str) -> Optional[ResFile]:
@@ -729,6 +776,53 @@ def _format_conversion_target(file: Path, mod_path: Path) -> str:
     return str(rel)
 
 
+def _format_rel_path(path: Path, root: Optional[Path]) -> str:
+    if root:
+        try:
+            return str(path.relative_to(root))
+        except ValueError:
+            pass
+    return str(path)
+
+
+def _describe_tex1_source(tex1_path: Path, tex2_path: Path, root_mod_path: Optional[Path]) -> str:
+    if not root_mod_path:
+        return "external"
+
+    source_file = _get_extracted_source_path(tex2_path) or tex2_path
+    scope_root = _get_scope_root(source_file, root_mod_path)
+    if scope_root:
+        try:
+            tex1_path.relative_to(scope_root)
+            return "same scope"
+        except ValueError:
+            pass
+
+    try:
+        rel = tex1_path.relative_to(root_mod_path).parts
+    except ValueError:
+        return "external"
+
+    if rel[:2] == ("content", "Model") or (len(rel) >= 3 and rel[0] == "aoc" and rel[2] == "Model"):
+        return "base mod"
+    return "external"
+
+
+def _format_texture_path(file: Path, mod_path: Optional[Path], root_mod_path: Optional[Path]) -> str:
+    if mod_path:
+        try:
+            return _format_conversion_target(file, mod_path)
+        except ValueError:
+            pass
+    return _format_rel_path(file, root_mod_path)
+
+
+def _log_texture_merge(tex1: str, tex2: str, output: str, source: Optional[str] = None) -> None:
+    source_text = f"; source={source}" if source else ""
+    with TEXTURE_LOG.open("a", encoding="utf-8") as log:
+        log.write(f"Merged texture split: Tex1={tex1}; Tex2={tex2}{source_text}; output={output}\n")
+
+
 def _cleanup_temp_extract_path(path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
     try:
@@ -830,6 +924,11 @@ def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None, root_mod_path: 
     if is_tex1 and max({i.MipCount for i in list(res_file.Textures.Values)}) > 1:
         tex2 = Path(str(sbfres).replace("Tex1", "Tex2"))
         if tex2.exists():
+            _log_texture_merge(
+                _format_texture_path(sbfres, mod_path, root_mod_path),
+                _format_texture_path(tex2, mod_path, root_mod_path),
+                sbfres.with_name(f"{name.replace('Tex1', 'Tex')}{ext}").name,
+            )
             res_file_tex2 = ResFile(MemoryStream(util.unyaz_if_needed(tex2.read_bytes())))
             for texture in list(res_file_tex2.Textures.Values):
                 target = res_file.Textures[texture.Name]
@@ -850,10 +949,23 @@ def convert_bfres(sbfres: Path, mod_path: Optional[Path] = None, root_mod_path: 
         merged = None
         if external_tex1:
             merged = _merge_external_tex1_with_tex2(external_tex1, res_file, name)
+            if merged:
+                _log_texture_merge(
+                    _format_texture_path(external_tex1, None, root_mod_path),
+                    _format_texture_path(sbfres, mod_path, root_mod_path),
+                    sbfres.with_name(f"{name}{ext}").name,
+                    _describe_tex1_source(external_tex1, sbfres, root_mod_path),
+                )
         else:
             stock_wiiu_tex1 = _get_stock_wiiu_tex1(sbfres)
             if stock_wiiu_tex1:
                 merged = _merge_tex1_res_file_with_tex2(stock_wiiu_tex1, res_file, name)
+                if merged:
+                    _log_texture_merge(
+                        f"stock Wii U {sbfres.name.replace('Tex2', 'Tex1')}",
+                        _format_texture_path(sbfres, mod_path, root_mod_path),
+                        sbfres.with_name(f"{name}{ext}").name,
+                    )
         if merged:
             res_file = merged
     
@@ -1416,6 +1528,7 @@ def convert(mod: Path) -> None:
 
 def main() -> None:
     ERROR_LOG.write_text("", encoding="utf-8")
+    TEXTURE_LOG.write_text("", encoding="utf-8")
 
     if len(args.bnp) == 1: # one argument
         arg_path = Path(args.bnp[0])
