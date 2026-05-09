@@ -783,25 +783,42 @@ def _convert_cnt1_parsed(parsed: dict[str, object], src_endian: str, dst_endian:
 
 
 def _convert_usd1_tail_via_model(tail: bytes, src_endian: str, dst_endian: str) -> bytes:
-    words: list[bytes] = []
-    strings: list[bytes] = []
-    trailer = b""
+    converted_tail = bytearray()
     cursor = 0
     while cursor < len(tail):
         current_tail = tail[cursor:]
         if _looks_like_ascii_identifier_blob(current_tail):
             token_end = current_tail.find(b"\x00")
-            token_size = len(current_tail) if token_end == -1 else token_end + 1
-            strings.append(current_tail[:token_size])
-            cursor += token_size
+            token_end = len(current_tail) if token_end == -1 else token_end
+            token = current_tail[:token_end]
+            blob_size = token_end + 1 if token_end < len(current_tail) else len(current_tail)
+            next_byte = current_tail[blob_size] if blob_size < len(current_tail) else None
+            next_word = current_tail[blob_size : blob_size + 4]
+            if len(token) in (1, 2) and current_tail[len(token):4] == b"\x00" * (4 - len(token)):
+                converted_tail += _swap_u32(current_tail, 0, src_endian, dst_endian)
+                cursor += 4
+            elif next_byte is not None and (
+                _is_ascii_identifier_initial(next_byte) or (len(next_word) == 4 and next_word[:3] == b"\x00\x00\x00" and next_word[3] != 0x00)
+            ):
+                converted_tail += current_tail[:blob_size]
+                cursor += blob_size
+            else:
+                padded_size = _align(blob_size, 4)
+                converted_tail += current_tail[:padded_size]
+                cursor += padded_size
             continue
-        if len(current_tail) < 4:
-            trailer = current_tail
-            cursor = len(tail)
+        if cursor + 4 <= len(tail):
+            word = tail[cursor : cursor + 4]
+            stripped = word.lstrip(b"\x00")
+            if stripped and len(stripped) < 4 and all(0x20 <= byte <= 0x7E for byte in stripped):
+                converted_tail += word
+            else:
+                converted_tail += _swap_u32(tail, cursor, src_endian, dst_endian)
+            cursor += 4
+        else:
+            converted_tail += tail[cursor:]
             break
-        words.append(_swap_u32(tail, cursor, src_endian, dst_endian))
-        cursor += 4
-    return b"".join(words) + b"".join(strings) + trailer
+    return bytes(converted_tail)
 
 
 def _read_cstring_blob(data: bytes, offset: int) -> bytes:
@@ -824,73 +841,11 @@ def _swap_u32_words_blob(data: bytes, src_endian: str, dst_endian: str) -> bytes
 def _convert_usd1_parsed(parsed: dict[str, object], src_endian: str, dst_endian: str) -> dict[str, object]:
     tail = _bytes_from_json_field(parsed["tail_hex"], "usd1.tail_hex")
     entries = list(parsed["entries"])
-    entry_count = len(entries)
-    tail_base = 0x0C + entry_count * 0x0C
-
-    semantic_entries: list[dict[str, object]] = []
-    for index, entry in enumerate(entries):
-        entry_pos = 0x0C + index * 0x0C
-        suffix = _bytes_from_json_field(entry["suffix_hex"], f"usd1.entries[{index}].suffix_hex", 2)
-        data_type = suffix[0] if suffix else 0
-        value_u16 = int(entry["value_u16"])
-        name_offset = int(entry["first_u32"]) + entry_pos - tail_base
-        data_offset = int(entry["second_u32"]) + entry_pos - tail_base if int(entry["second_u32"]) else -1
-        name_blob = _read_cstring_blob(tail, name_offset)
-        if data_type == 0:
-            data_blob = _read_cstring_blob(tail, data_offset)
-        else:
-            data_blob = tail[data_offset : data_offset + value_u16 * 4] if data_offset >= 0 else b""
-        semantic_entries.append(
-            {
-                "type": data_type,
-                "value_u16": value_u16,
-                "suffix_hex": _bytes_to_json(suffix),
-                "name_blob": name_blob,
-                "data_blob": data_blob,
-            }
-        )
-
-    numeric_payload = bytearray()
-    numeric_offsets: dict[int, int] = {}
-    for index, entry in enumerate(semantic_entries):
-        if entry["type"] == 0:
-            continue
-        numeric_offsets[index] = len(numeric_payload)
-        numeric_payload += _swap_u32_words_blob(entry["data_blob"], src_endian, dst_endian)
-
-    string_payload = bytearray()
-    string_name_offsets: dict[int, int] = {}
-    string_data_offsets: dict[int, int] = {}
-    for index, entry in enumerate(semantic_entries):
-        if entry["type"] == 0:
-            string_data_offsets[index] = len(string_payload)
-            string_payload += entry["data_blob"]
-        string_name_offsets[index] = len(string_payload)
-        string_payload += entry["name_blob"]
-
-    numeric_size = len(numeric_payload)
-    converted_entries: list[dict[str, object]] = []
-    for index, entry in enumerate(semantic_entries):
-        entry_pos = 0x0C + index * 0x0C
-        name_abs = tail_base + numeric_size + string_name_offsets[index]
-        if entry["type"] == 0:
-            data_abs = tail_base + numeric_size + string_data_offsets[index]
-        else:
-            data_abs = tail_base + numeric_offsets[index]
-        converted_entries.append(
-            {
-                "first_u32": name_abs - entry_pos,
-                "second_u32": data_abs - entry_pos if entry["data_blob"] else 0,
-                "value_u16": entry["value_u16"],
-                "suffix_hex": entry["suffix_hex"],
-            }
-        )
-
     return {
         "entry_count": parsed["entry_count"],
-        "count_padding_hex": "0000",
-        "entries": converted_entries,
-        "tail_hex": _bytes_to_json(_pad(bytes(numeric_payload) + bytes(string_payload), _align(len(numeric_payload) + len(string_payload), 4))),
+        "count_padding_hex": parsed.get("count_padding_hex", "0000"),
+        "entries": entries,
+        "tail_hex": _bytes_to_json(_convert_usd1_tail_via_model(tail, src_endian, dst_endian)),
     }
 
 
@@ -923,7 +878,9 @@ def _convert_wnd1_parsed(parsed: dict[str, object], src_endian: str, dst_endian:
     cursor = 0
     while cursor + 4 <= len(trailing_words):
         word = trailing_words[cursor : cursor + 4]
-        if word[0] == 0x00 and word[1] != 0x00 and word[2:4] == b"\x00\x00":
+        if word[2:4] == b"\x00\x00" and (
+            (word[0] == 0x00 and word[1] != 0x00) or (word[0] != 0x00 and word[0] <= 0x20 and word[1] <= 0x7F)
+        ):
             converted_trailing += _swap_u16(trailing_words, cursor, src_endian, dst_endian)
             converted_trailing += word[2:4]
         else:
@@ -949,6 +906,7 @@ def _convert_mat1_parsed(parsed: dict[str, object], src_endian: str, dst_endian:
         texture_extensions = _bytes_from_json(str(mat["texture_extensions_hex"]))
         remainder = bytearray(_bytes_from_json(str(mat["remainder_hex"])))
         original_memory = memory
+        original_remainder = bytes(remainder)
 
         if (
             memory == 0x15
@@ -964,6 +922,12 @@ def _convert_mat1_parsed(parsed: dict[str, object], src_endian: str, dst_endian:
                 and remainder[flag_offset + 2 : flag_offset + 4] == b"\x00\x00"
             ):
                 remainder[flag_offset] = 0x0B
+            elif (
+                len(remainder) >= flag_offset + 4
+                and remainder[flag_offset] == 0x0B
+                and remainder[flag_offset + 2 : flag_offset + 4] == b"\x00\x00"
+            ):
+                remainder[flag_offset] = 0x0D
 
         if memory & 0x8000 and len(remainder) == 20:
             swapped = bytearray(remainder[:8])
@@ -1119,6 +1083,10 @@ def _convert_mat1_parsed(parsed: dict[str, object], src_endian: str, dst_endian:
             swapped += _swap_u32(remainder, 48, src_endian, dst_endian)
             swapped += remainder[52:56]
             remainder = swapped
+        elif original_memory == 0x215 and len(remainder) == 8:
+            swapped = bytearray(remainder[:4])
+            swapped += _swap_u32(remainder, 4, src_endian, dst_endian)
+            remainder = swapped
         elif len(remainder) >= 20:
             swapped = bytearray(remainder[:12])
             for offset in range(12, len(remainder), 4):
@@ -1128,28 +1096,78 @@ def _convert_mat1_parsed(parsed: dict[str, object], src_endian: str, dst_endian:
                     swapped += remainder[offset:]
             remainder = swapped
 
+        projection_count = (memory >> 15) & 0x3
+        if projection_count:
+            tev_stage_count = (memory >> 6) & 0x7
+            projection_offset = tev_stage_count * 4
+            if (memory >> 9) & 1:
+                projection_offset += 8
+            if (memory >> 10) & 1:
+                projection_offset += 4
+            if (memory >> 12) & 1:
+                projection_offset += 4
+            if (memory >> 14) & 1:
+                projection_offset += 12
+
+            projection_sources = []
+            coord_count = (memory >> 4) & 0x3
+            for coord_index in range(coord_count):
+                coord = texture_coord[coord_index * 8 : (coord_index + 1) * 8]
+                if len(coord) >= 2 and coord[1] in (3, 4, 5):
+                    projection_sources.append(coord[1])
+
+            for index, source in enumerate(projection_sources[:projection_count]):
+                flag_offset = projection_offset + index * 20 + 16
+                if flag_offset + 4 <= len(remainder):
+                    original_projection_flag = original_remainder[flag_offset : flag_offset + 4]
+                    switch_projection_flag = next((byte for byte in original_projection_flag if byte), 0)
+                    if (
+                        not switch_projection_flag
+                        and original_memory == 0x1C4BF
+                        and projection_sources[:projection_count] == [3, 3, 4]
+                        and index == 2
+                        and source == 4
+                    ):
+                        switch_projection_flag = 4
+                    if (
+                        not switch_projection_flag
+                        and original_memory == 0x8015
+                        and texture_maps[2:4] == b"\x04\x04"
+                        and source == 4
+                        and texture_srt[:8] != b"\x00\x00\x00\x00\x00\x00\x00\x00"
+                    ):
+                        switch_projection_flag = 4
+                    remainder[flag_offset : flag_offset + 4] = _write_u32(switch_projection_flag, dst_endian)
+
         if (
             original_memory == 0x806A
             and color_2 == b"\xFF\xFF\xFF\xFF"
-            and bytes(remainder).endswith(b"\x00\x00\x00\x00")
         ):
             head_word_0 = _read_u32(texture_maps, 0, src_endian) if len(texture_maps) >= 4 else None
             head_word_1 = _read_u32(texture_srt, 0, src_endian) if len(texture_srt) >= 4 else None
             head_word_1_hi = (head_word_1 >> 16) & 0xFFFF if head_word_1 is not None else None
             head_word_1_lo = head_word_1 & 0xFFFF if head_word_1 is not None else None
+            second_map_is_projection = (
+                len(texture_maps) >= 8
+                and _read_u32(texture_maps, 4, src_endian) == 0x00010404
+                and len(texture_coord) >= 16
+                and texture_coord[9] == 4
+            )
         else:
-            head_word_0 = head_word_1_hi = head_word_1_lo = None
+            head_word_0 = head_word_1_hi = head_word_1_lo = second_map_is_projection = None
 
         if (
             original_memory == 0x806A
             and color_2 == b"\xFF\xFF\xFF\xFF"
             and head_word_0 in (0x00000000, 0x00020000)
-            and head_word_1_hi in (0x0001, 0x0007)
-            and head_word_1_lo == 0x0404
-            and bytes(remainder).endswith(b"\x00\x00\x00\x00")
+            and (
+                (head_word_1_hi in (0x0001, 0x0007) and head_word_1_lo == 0x0404)
+                or second_map_is_projection
+            )
         ):
             memory = 0x1006A
-            texture_coord = b"\x00\x03\x00\x00" + texture_coord[4:]
+            if len(texture_coord) >= 16 and texture_coord[1] == 0 and texture_coord[9] == 4:
+                texture_coord = b"\x00\x03\x00\x00" + texture_coord[4:]
             remainder = bytearray(
                 bytes(remainder)[:-4]
                 + b"\x01\x00\x00\x00"
@@ -1180,6 +1198,58 @@ def _convert_mat1_parsed(parsed: dict[str, object], src_endian: str, dst_endian:
         converted.append(entry_dict)
 
     return {"materials": converted}
+
+
+def _convert_flan_animation_info_payload(data: bytes, src_endian: str, dst_endian: str) -> bytes | None:
+    if len(data) < 8:
+        return None
+    target_count = data[4]
+    offset_table_end = 8 + target_count * 4
+    if len(data) < offset_table_end:
+        return None
+
+    target_offsets = [_read_u32(data, 8 + index * 4, src_endian) for index in range(target_count)]
+    end = offset_table_end
+    targets: list[tuple[int, int, int, int]] = []
+    for target_offset in target_offsets:
+        if target_offset + 12 > len(data):
+            return None
+        curve_type = data[target_offset + 2]
+        key_count = _read_u16(data, target_offset + 4, src_endian)
+        keys_offset = _read_u32(data, target_offset + 8, src_endian)
+        if curve_type == 0:
+            key_size = 0
+        elif curve_type == 1:
+            key_size = 8
+        elif curve_type == 2:
+            key_size = 12
+        else:
+            return None
+        target_end = target_offset + keys_offset + key_count * key_size
+        if target_end > len(data):
+            return None
+        targets.append((target_offset, curve_type, key_count, keys_offset))
+        end = max(end, target_end)
+
+    out = bytearray(data[:end])
+    for index, target_offset in enumerate(target_offsets):
+        out[8 + index * 4 : 12 + index * 4] = _write_u32(target_offset, dst_endian)
+
+    for target_offset, curve_type, key_count, keys_offset in targets:
+        out[target_offset + 4 : target_offset + 6] = _write_u16(key_count, dst_endian)
+        out[target_offset + 8 : target_offset + 12] = _write_u32(keys_offset, dst_endian)
+        key_pos = target_offset + keys_offset
+        for _ in range(key_count):
+            out[key_pos : key_pos + 4] = _swap_float32(data, key_pos, src_endian, dst_endian)
+            if curve_type == 1:
+                out[key_pos + 4 : key_pos + 6] = _swap_u16(data, key_pos + 4, src_endian, dst_endian)
+                key_pos += 8
+            elif curve_type == 2:
+                out[key_pos + 4 : key_pos + 8] = _swap_float32(data, key_pos + 4, src_endian, dst_endian)
+                out[key_pos + 8 : key_pos + 12] = _swap_float32(data, key_pos + 8, src_endian, dst_endian)
+                key_pos += 12
+
+    return bytes(out)
 
 
 def _convert_txt1_parsed(parsed: dict[str, object], src_endian: str, dst_endian: str) -> dict[str, object]:
@@ -1230,6 +1300,17 @@ def _convert_txt1_parsed(parsed: dict[str, object], src_endian: str, dst_endian:
         text_blob = bytes(raw_payload[text_start:text_end])
         if not (text_blob[:1] == b"\x40" and _looks_like_ascii_identifier_blob(text_blob[1:])):
             raw_payload[text_start:text_end] = _convert_utf16_text(text_blob, src_endian, dst_endian)
+
+    if has_per_character_transform and a0_value:
+        pct_start = a0_value - 0xA4 + 4
+        if 0 <= pct_start and pct_start + 12 <= len(raw_payload):
+            raw_payload[pct_start : pct_start + 4] = _swap_float32(raw_payload, pct_start, src_endian, dst_endian)
+            raw_payload[pct_start + 4 : pct_start + 8] = _swap_float32(raw_payload, pct_start + 4, src_endian, dst_endian)
+            if raw_payload[pct_start + 10]:
+                anim_start = pct_start + 12
+                converted_anim = _convert_flan_animation_info_payload(raw_payload[anim_start:], src_endian, dst_endian)
+                if converted_anim is not None:
+                    raw_payload[anim_start : anim_start + len(converted_anim)] = converted_anim
 
     return {
         "text_offset": text_offset_out,
