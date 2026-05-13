@@ -3,10 +3,15 @@ A script combining various sources to convert BotW WiiU mods for the Switch vers
 
 ## Requirements
 - [Python 3.9+](https://www.python.org/downloads/release/python-3913/) (You must check `Add Python to PATH` during installation on Windows)
-- [.NET 5.0 Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/5.0/runtime) (required for the [HKX2 ReadWrite Havok converter](https://gitlab.com/HKX2))
-- [BotW Cross-Platform Mod Loader](https://github.com/NiceneNerd/BCML) (pip install bcml)
 
-- A legal, unpacked dump of BoTW Switch (1.6.0) for bcml. For obtaining a BoTW dump, see https://zeldamods.org/wiki/Help:Dumping_games.
+- [cobra838/BCML fork](https://github.com/cobra838/BCML). Install for Python 3.9:  
+`
+py -3.9 -m pip install --force-reinstall "https://raw.githubusercontent.com/cobra838/BCML/master/target/wheels/bcml-3.10.8-cp39-none-win_amd64.whl"
+`
+
+- [.NET 5.0 Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/5.0/runtime) (required for the [HKX2 ReadWrite Havok converter](https://gitlab.com/HKX2))
+
+- A legal, unpacked dump of BoTW Switch (1.6.0) for BCML. For obtaining a BoTW dump, see https://zeldamods.org/wiki/Help:Dumping_games.
 
 ## Usage
 
