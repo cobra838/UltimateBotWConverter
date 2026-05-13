@@ -314,49 +314,6 @@ def _remove_dummy_byml_placeholders(mod_path: Path) -> None:
             file.unlink()
 
 
-class _SerialPool:
-    def map(self, func, iterable):
-        return [func(item) for item in iterable]
-
-    def starmap(self, func, iterable):
-        return [func(*item) for item in iterable]
-
-
-def _regenerate_rstb_log(mod_dir: Path) -> None:
-    rstb_log = mod_dir / "logs" / "rstb.json"
-    if not rstb_log.exists():
-        return
-
-    from bcml.mergers import rstable
-
-    settings = util.get_settings()
-    old_wiiu = settings.get("wiiu", True)
-    settings["wiiu"] = False
-    if hasattr(rstable.get_stock_rstb, "table"):
-        delattr(rstable.get_stock_rstb, "table")
-
-    try:
-        rstb_log.unlink()
-        files = find_modded_files(mod_dir)
-        merger = rstable.RstbMerger()
-        merger.set_pool(_SerialPool())
-        merger.log_diff(mod_dir, files)
-    finally:
-        settings["wiiu"] = old_wiiu
-        if hasattr(rstable.get_stock_rstb, "table"):
-            delattr(rstable.get_stock_rstb, "table")
-
-
-def _regenerate_rstb_logs(mod_path: Path) -> None:
-    _regenerate_rstb_log(mod_path)
-    options = mod_path / "options"
-    if not options.exists():
-        return
-    for option in sorted(options.iterdir()):
-        if option.is_dir():
-            _regenerate_rstb_log(option)
-
-
 def _get_scope_root(file: Path, root_mod_path: Optional[Path]) -> Optional[Path]:
     if not root_mod_path:
         return None
@@ -1488,7 +1445,6 @@ def convert(mod: Path) -> None:
         _clear_consumed_tex_state(mod_path)
         _remove_dummy_byml_placeholders(mod_path)
         warnings = convert_mod(mod_path, False, True)
-        _regenerate_rstb_logs(mod_path)
 
         # Pack the converted mod into a new bnp
         out = Path(f'{args.output}.bnp') if args.output else mod.with_name(f"{mod.stem}_switch.bnp")
