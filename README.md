@@ -49,6 +49,7 @@ BCML's converter is still limited, so using other tools to convert those files t
 - `.bcamanim`*
 - `.bflyt`**
 - `.sesetlist`***
+- `.msbt`****
 
 \*`.bcamanim` files are not converted reliably yet. The converter currently attempts direct BFRES platform conversion for them, but tested outputs do not always match stock Switch files, so manual replacement or further format-specific handling may still be required.
 
@@ -63,6 +64,11 @@ Also exceptions:
 
 \*\*\*`.sesetlist` conversion is partial. The converter uses the stock Switch file as the base and patches matching EMTR parameter blocks by name using the WiiU mod vs stock WiiU diff. Texture/shader data remains from the stock Switch file; unknown EMTRs or chunks with unknown WiiU -> Switch mapping are left unchanged and logged as warnings.
 
+\*\*\*\*`.msbt` conversion aims for 1:1 output in all cases.  
+Known exceptions related to Toy-Con VR on Switch:
+- `LayoutMsg/MessageTipsRunTime_00.msbt` - Switch `+1` line
+- `LayoutMsg/OptionWindow_00.msbt` - Switch `+4` lines
+- `LayoutMsg/SystemWindow_00.msbt` - Switch `+11` lines
 
 ## Installation
 For now, you can install the prerelease by running `pip install ubotw-converter` from a Command-Line Interface (CLI).

@@ -31,6 +31,7 @@ from .bars_py import bars, bcf_converter
 from .bflim_convertor import bntx_dds_injector as bntx
 from .sbeco import convert_to_little_endian as convert_sbeco_bytes
 from .ptcl import convert_sesetlist
+from .msbt_conv import convert_msbt_to_little_endian
 import oead
 
 SCRIPT: Path = Path(__file__).parent
@@ -64,7 +65,7 @@ from BfresLibrary import ResFile
 from BfresLibrary.PlatformConverters import ConverterHandle
 
 # Supported formats
-SUPPORTED = [".sbfres", ".sbitemico", ".hkcl", ".hkrg", ".hkrb", ".shknm2", ".shksc", ".shktmrb", ".bars", ".bfstm", ".bflim", ".bflyt", ".sblarc", ".bcamanim", ".sbeco"]
+SUPPORTED = [".sbfres", ".sbitemico", ".hkcl", ".hkrg", ".hkrb", ".shknm2", ".shksc", ".shktmrb", ".bars", ".bfstm", ".bflim", ".bflyt", ".sblarc", ".bcamanim", ".sbeco", ".msbt"]
 COMPATIBLE_EXT = [".bfevfl", ".sblwp", ".fxparam", ".jpg", ".txt", ".json"]
 
 BFRES_EXT = [".sbfres", ".sbitemico", ".bcamanim"]
@@ -88,6 +89,13 @@ BFLYT_WARNING_FILES = {
     "PaMessageTipsDrcImgAmiibo_00.bflyt",
     "PaMessageTipsDrcImgAmiiboNN_00.bflyt",  # Switch
 }
+
+MSBT_WARNING_FILES = {
+    "MessageTipsRunTime_00.msbt",
+    "OptionWindow_00.msbt",
+    "SystemWindow_00.msbt",
+}
+
 
 # Construct an argument parser
 parser = argparse.ArgumentParser(description="Converts mods in BNP format using BCML's converter, complemented by some additional tools")
@@ -272,6 +280,8 @@ def _detect_content_format(data: bytes) -> Optional[str]:
         return "bfres"
     if magic == b"SARC":
         return "sarc"
+    if inner[:8] == b"MsgStdBn":
+        return "msbt"
     if magic == b"BFEV":
         return ".bfevfl"
     if magic == b"<?xm":
@@ -1327,6 +1337,15 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
     elif file.suffix == ".sbeco" or content_format == "beco":
         # Convert BECO coordinate maps from Wii U big endian to Switch little endian.
         convert_sbeco(file)
+        print("Successfully converted " + file.name + "!")
+
+    elif file.suffix == ".msbt" or content_format == "msbt":
+        # Convert text lang files
+        if file.name in MSBT_WARNING_FILES:
+            logger.warning(
+                f"{_format_conversion_target(file, mod_path)} is a known MSBT exception"
+            )
+        file.write_bytes(convert_msbt_to_little_endian(file.read_bytes()))
         print("Successfully converted " + file.name + "!")
 
     elif file.suffix == ".bflyt" or content_format == "bflyt":
