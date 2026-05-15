@@ -249,6 +249,14 @@ def _find_mod_roots(root: Path) -> list[Path]:
     ]
 
 
+def _get_nested_mod_roots(mod_paths: list[Path], mod_path: Path) -> list[Path]:
+    return [
+        candidate
+        for candidate in mod_paths
+        if candidate != mod_path and candidate.is_relative_to(mod_path)
+    ]
+
+
 def _get_scope_root(file: Path, root_mod_path: Optional[Path]) -> Optional[Path]:
     if not root_mod_path:
         return None
@@ -1182,6 +1190,7 @@ def convert(mod: Path) -> None:
             temp_extract_root = _get_temp_extract_root(mod_path / "info.json")
             temp_extract_roots.append(temp_extract_root)
             _clear_consumed_tex_state(mod_path)
+            nested_mod_roots = _get_nested_mod_roots(mod_paths, mod_path)
             if (mod_path / "info.json").exists():
                 meta = loads((mod_path / "info.json").read_text("utf-8"))
 
@@ -1191,6 +1200,8 @@ def convert(mod: Path) -> None:
             pack_files = []
             other_files = []
             for file in mod_path.rglob("*.*"):
+                if any(file.is_relative_to(nested_root) for nested_root in nested_mod_roots):
+                    continue
                 if "content" in file.parts or "aoc" in file.parts:
                     task = (file, mod_path, mod_path, not is_bnp)
                     if "pack" in file.suffix or file.suffix == ".sblarc":
