@@ -72,6 +72,23 @@ HAVOK_EXT = [".hkcl", ".hkrg", ".hkrb", ".shknm2", ".shksc", ".shktmrb"]
 LAYOUT_EXT = [".bflan", ".bgsh", ".bnsh", ".bushvt", ".bflyt", ".bflim", ".bntx"]
 SOUND_EXT = [".bfstm", ".bfstp", ".bfwav", ".bars"]
 
+BFLYT_WARNING_FILES = {
+    "AppMap_00.bflyt",
+    "MainHardMode_00.bflyt",
+    "MainShortCut_00.bflyt",
+    "PaTempMeter_00.bflyt",
+    "PauseMenuBG_00.bflyt",
+    "ShopBtnList5_00.bflyt",
+    "SystemWindow_00.bflyt",
+    "ChangeControllerNN_00.bflyt",  # Switch-only
+    "PaAllControllerTips_00.bflyt",
+    "PaAllControllerTipsNN_00.bflyt",  # Switch
+    "PaMessageTipsDrcImage_00.bflyt",
+    "PaMessageTipsDrcImageNN_00.bflyt",  # Switch
+    "PaMessageTipsDrcImgAmiibo_00.bflyt",
+    "PaMessageTipsDrcImgAmiiboNN_00.bflyt",  # Switch
+}
+
 # Construct an argument parser
 parser = argparse.ArgumentParser(description="Converts mods in BNP format using BCML's converter, complemented by some additional tools")
 parser.add_argument("bnp", nargs='+')
@@ -1226,9 +1243,13 @@ def convert_bflyt_sblarc(sblarc: Path) -> None:
         try:
             for bflyt in blarc_path.rglob('*.bflyt'):
                 try:
+                    if bflyt.name in BFLYT_WARNING_FILES:
+                        logging.warning(
+                            f"{sblarc.name} -> {bflyt.relative_to(blarc_path)} is a known BFLYT exception and may not convert 1:1"
+                        )
                     convert_bflyt_layoutu(bflyt)
                 except Exception as err:
-                    logging.warning(f"{bflyt.relative_to(blarc_path)} could not be converted")
+                    logging.warning(f"{sblarc.name} -> {bflyt.relative_to(blarc_path)} could not be converted")
                     logging.debug(err, exc_info=True)
 
             for bflan in blarc_path.rglob('*.bflan'):
@@ -1310,6 +1331,10 @@ def change_platform(file: Path, mod_path: Path, root_mod_path: Path = None) -> N
 
     elif file.suffix == ".bflyt" or content_format == "bflyt":
         # Convert layout files
+        if file.name in BFLYT_WARNING_FILES:
+            logger.warning(
+                f"{_format_conversion_target(file, mod_path)} is a known BFLYT exception and may not convert 1:1"
+            )
         convert_bflyt_layoutu(file)
         print("Successfully converted " + file.name + "!")
 
