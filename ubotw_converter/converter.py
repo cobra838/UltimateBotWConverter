@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 from subprocess import run
 from os.path import sep
+import os
 from glob import glob
 from urllib.request import urlopen, urlretrieve
 from io import BytesIO
@@ -12,6 +13,7 @@ from multiprocessing import get_context
 from typing import Iterator, Optional, Union
 from hashlib import sha1
 from functools import lru_cache
+from datetime import datetime
 import sys
 import shutil
 import argparse
@@ -19,6 +21,7 @@ import re
 import traceback
 import logging
 import logging.config
+import msvcrt
 import xxhash
 
 from bcml.install import open_mod, find_modded_files
@@ -84,10 +87,67 @@ TEXTURE_LOG = SCRIPT / "texture.log"
 # Error logging
 logging.config.fileConfig(fname=LOG_CONF, defaults={"logfilename": ERROR_LOG, "loglevel": args.log_level.upper()})
 logger = logging.getLogger(__name__)
+CURRENT_LOG_CONTEXT = None
 
 WRAPPER_STATE_FILE = "__wrapper_state__"
 SOURCE_PATH_FILE = "__source_path__"
 CONSUMED_TEX_DIR = "__consumed_tex__"
+
+
+def _set_log_context(mod_name: str, output_name: str, timestamp: str, error_start: int, texture_start: int) -> None:
+    global CURRENT_LOG_CONTEXT
+    CURRENT_LOG_CONTEXT = {
+        "mod_name": mod_name,
+        "output_name": output_name,
+        "timestamp": timestamp,
+        "error_start": error_start,
+        "texture_start": texture_start,
+    }
+
+
+def _append_mod_log_header(log_path: Path, log_kind: str, message: str) -> None:
+    header = b""
+    start_offset = None
+    if CURRENT_LOG_CONTEXT is not None:
+        start_offset = CURRENT_LOG_CONTEXT[f"{log_kind}_start"]
+        header = (
+            f"{'=' * 80}\n"
+            f"[{CURRENT_LOG_CONTEXT['timestamp']}] mod={CURRENT_LOG_CONTEXT['mod_name']} -> output={CURRENT_LOG_CONTEXT['output_name']}\n"
+        ).encode("utf-8")
+
+    with log_path.open("a+b") as log:
+        log.seek(0)
+        msvcrt.locking(log.fileno(), msvcrt.LK_LOCK, 1)
+        try:
+            log.seek(0, os.SEEK_END)
+            if header and log.tell() == start_offset:
+                if start_offset > 0:
+                    log.write(b"\n")
+                log.write(header)
+            log.write(message.encode("utf-8"))
+        finally:
+            log.flush()
+            log.seek(0)
+            msvcrt.locking(log.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+class _LazyErrorLogHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            _append_mod_log_header(ERROR_LOG, "error", self.format(record) + "\n")
+        except Exception:
+            self.handleError(record)
+
+
+for handler in tuple(logging.getLogger().handlers):
+    if isinstance(handler, logging.FileHandler):
+        lazy_handler = _LazyErrorLogHandler()
+        lazy_handler.setLevel(handler.level)
+        lazy_handler.setFormatter(handler.formatter)
+        logging.getLogger().removeHandler(handler)
+        logging.getLogger().addHandler(lazy_handler)
+        handler.close()
+        break
 
 def is_file_modded(name: str, file: Union[bytes, Path], count_new: bool = True) -> bool:
     table = util.get_hash_table(True)
@@ -776,8 +836,11 @@ def _format_texture_path(file: Path, mod_path: Optional[Path], root_mod_path: Op
 
 def _log_texture_merge(tex1: str, tex2: str, output: str, source: Optional[str] = None) -> None:
     source_text = f"; source={source}" if source else ""
-    with TEXTURE_LOG.open("a", encoding="utf-8") as log:
-        log.write(f"Merged texture split: Tex1={tex1}; Tex2={tex2}{source_text}; output={output}\n")
+    _append_mod_log_header(
+        TEXTURE_LOG,
+        "texture",
+        f"Merged texture split: Tex1={tex1}; Tex2={tex2}{source_text}; output={output}\n",
+    )
 
 
 def _cleanup_temp_extract_path(path: Path) -> None:
@@ -1403,11 +1466,16 @@ def convert_files(file: Path, mod_path: Path, root_mod_path = None) -> None:
         logger.warning(f"{_format_conversion_target(file, mod_path)} could not be converted")
         logger.debug(err, exc_info=True)
 
-def convert(mod: Path) -> None:
+def convert(mod: Path) -> int:
     # Open the mod
     mod_path = open_mod(mod)
     temp_extract_root = _get_temp_extract_root(mod_path / "info.json")
+    out = Path(f'{args.output}.bnp') if args.output else mod.with_name(f"{mod.stem}_switch.bnp")
+    error_log_start = ERROR_LOG.stat().st_size if ERROR_LOG.exists() else 0
+    texture_log_start = TEXTURE_LOG.stat().st_size if TEXTURE_LOG.exists() else 0
+    log_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
+        _set_log_context(mod.name, out.name, log_timestamp, error_log_start, texture_log_start)
         _clear_consumed_tex_state(mod_path)
         if (mod_path / "info.json").exists():
             meta = loads((mod_path / "info.json").read_text("utf-8"))
@@ -1433,7 +1501,11 @@ def convert(mod: Path) -> None:
                 if not files:
                     continue
                 if not args.single:
-                    with get_context("spawn").Pool(maxtasksperchild=500) as pool:
+                    with get_context("spawn").Pool(
+                        maxtasksperchild=500,
+                        initializer=_set_log_context,
+                        initargs=(mod.name, out.name, log_timestamp, error_log_start, texture_log_start),
+                    ) as pool:
                         pool.starmap(convert_files, files)
                         pool.close()
                         pool.join()
@@ -1447,7 +1519,6 @@ def convert(mod: Path) -> None:
         warnings = convert_mod(mod_path, False, True)
 
         # Pack the converted mod into a new bnp
-        out = Path(f'{args.output}.bnp') if args.output else mod.with_name(f"{mod.stem}_switch.bnp")
         if Path(out).exists():
             Path(out).unlink()
 
@@ -1477,15 +1548,15 @@ def convert(mod: Path) -> None:
         print(traceback.format_exc())
 
     finally:
+        global CURRENT_LOG_CONTEXT
+        CURRENT_LOG_CONTEXT = None
         # Remove the temporary mod_path
         _clear_consumed_tex_state(mod_path)
         shutil.rmtree(mod_path, ignore_errors=True)
         shutil.rmtree(temp_extract_root, ignore_errors=True)
+    return (ERROR_LOG.stat().st_size if ERROR_LOG.exists() else 0) - error_log_start
 
 def main() -> None:
-    ERROR_LOG.write_text("", encoding="utf-8")
-    TEXTURE_LOG.write_text("", encoding="utf-8")
-
     if len(args.bnp) == 1: # one argument
         arg_path = Path(args.bnp[0])
         if arg_path.exists():
@@ -1499,11 +1570,13 @@ def main() -> None:
                 raise FileNotFoundError(f"Could not find BNP file: {args.bnp[0]}")
     else: # more than one argument
     	mods = args.bnp
+
+    error_log_bytes_added = 0
     
     for mod in mods:
-        convert(Path(mod))
+        error_log_bytes_added += convert(Path(mod))
 
-    if ERROR_LOG.stat().st_size != 0:
+    if error_log_bytes_added > 0:
         print(f"It seems some files could not be converted. Please check the error log at {ERROR_LOG} for more info.")
 
 
