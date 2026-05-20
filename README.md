@@ -15,7 +15,7 @@ py -3.9 -m pip install --force-reinstall "https://raw.githubusercontent.com/cobr
 
 ## Usage
 
-You can run the converter module directly:
+You can run the converter module directly:  
 `python -m ubotw_converter.converter -s "your.bnp" --log-level debug`
 
 - `-s` runs the converter in single-threaded mode, which can help avoid multiprocessing-related issues.
@@ -89,3 +89,19 @@ In a CLI, run `convert_to_switch path/to/your/bnp`, and the conversion process w
 - [Leoetlino](https://github.com/leoetlino) - All his tools for working with BotW files
 - The creators of [Pythonnet](https://github.com/pythonnet)
 - [HGStone](https://github.com/HGStone) - Bat script and testing
+
+## TODO
+
+- BLAL conversion? .bagst? Also check Attenuation.baatarc: baatn, baroc, baacl
+
+- Add convert_to_big_endian to sbeco.py
+
+- Refactoring for:
+  - Model - Tex1 - Tex2 - on WiiU can be located separately in pack archives and in model folders, in aoc; in mods one texture without model and without Tex2 or Tex1; in options one texture without model and without Tex2 or Tex1
+
+- Reorganize converters into folders
+
+- .rsizetable (rstb)
+
+https://botw-modding-database.fandom.com/wiki/File_types
+
