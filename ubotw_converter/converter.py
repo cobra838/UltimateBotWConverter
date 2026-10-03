@@ -57,7 +57,7 @@ def convert_bflyt_layoutu(file: Path) -> None:
 
 
 # Import dll libraries
-BFRES_DLL = SCRIPT / "dotnet_libs" / "BfresLibrary"
+BFRES_DLL = SCRIPT / "BfresLibrary" / "BfresLibrary"
 
 import clr
 clr.AddReference(str(BFRES_DLL))

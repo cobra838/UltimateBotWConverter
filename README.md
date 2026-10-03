@@ -2,16 +2,26 @@
 A script combining various sources to convert BotW WiiU mods for the Switch version of the game
 
 ## Requirements
-- [Python 3.9+](https://www.python.org/downloads/release/python-3913/) (You must check `Add Python to PATH` during installation on Windows)
+- A legal, unpacked dump of BoTW Switch (1.6.0) and BoTW WiiU (1.5.0) for BCML. For obtaining a BoTW dump, see https://zeldamods.org/wiki/Help:Dumping_games.
 
-- [cobra838/BCML fork](https://github.com/cobra838/BCML). Install for Python 3.9:  
-`
-py -3.9 -m pip install --force-reinstall "https://raw.githubusercontent.com/cobra838/BCML/master/target/wheels/bcml-3.10.8-cp39-none-win_amd64.whl"
-`
+- [Python 3.9](https://www.python.org/downloads/) (You must check `Add Python to PATH` during installation on Windows)
+
+- Install the [cobra838/BCML fork](https://github.com/cobra838/BCML) from the terminal. For Python 3.9, run:
+
+```bash
+py -3.9 -m pip install --force-reinstall "https://raw.githubusercontent.com/cobra838/BCML/363cde3fba21dcac9293b3401efbfeb5e1216f22/target/wheels/bcml-3.10.8-cp39-none-win_amd64.whl"
+```
+
+- Run BCML from the terminal:
+
+```bash
+py -3.9 -m bcml
+```
+
+Then configure the paths to the WiiU and Switch game files inside BCML.
 
 - [.NET 5.0 Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/5.0/runtime) (required for the [HKX2 ReadWrite Havok converter](https://gitlab.com/HKX2))
 
-- A legal, unpacked dump of BoTW Switch (1.6.0) for BCML. For obtaining a BoTW dump, see https://zeldamods.org/wiki/Help:Dumping_games.
 
 ## Usage
 
@@ -70,14 +80,6 @@ Known exceptions related to Toy-Con VR on Switch:
 - `LayoutMsg/OptionWindow_00.msbt` - Switch `+4` lines
 - `LayoutMsg/SystemWindow_00.msbt` - Switch `+11` lines
 
-## Installation
-For now, you can install the prerelease by running `pip install ubotw-converter` from a Command-Line Interface (CLI).
-
-If wanting to install from source, run `pip install -e .` inside the folder where the source code is located 
-
-In a CLI, run `convert_to_switch path/to/your/bnp`, and the conversion process will start. If you encounter problems caused by multi-processing, you can use `convert_to_switch -s path/to/your/bnp` to enable single core. 
-
-
 ## Credits 
 - [AboodXD](https://github.com/aboood40091) - BCFSTM-BCFWAV Converter, BNTX Injector, Bflim Extractor, LayoutExporterU
 - [NanobotZ](https://github.com/NanobotZ) - bfstpfixer.py
@@ -104,4 +106,3 @@ In a CLI, run `convert_to_switch path/to/your/bnp`, and the conversion process w
 - .rsizetable (rstb)
 
 https://botw-modding-database.fandom.com/wiki/File_types
-
