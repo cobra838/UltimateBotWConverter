@@ -4,18 +4,18 @@ A script combining various sources to convert BotW WiiU mods for the Switch vers
 ## Requirements
 - A legal, unpacked dump of BoTW Switch (1.6.0) and BoTW WiiU (1.5.0) for BCML. For obtaining a BoTW dump, see https://zeldamods.org/wiki/Help:Dumping_games.
 
-- [Python 3.9](https://www.python.org/downloads/) (You must check `Add Python to PATH` during installation on Windows)
+- [Python 3.9-3.14](https://www.python.org/downloads/) (You must check `Add Python to PATH` during installation on Windows)
 
-- Install the [cobra838/BCML fork](https://github.com/cobra838/BCML) from the terminal. For Python 3.9, run:
+- Install the [cobra838/BCML fork](https://github.com/cobra838/BCML) from the terminal. For Python 3.9-3.14, run:
 
 ```bash
-py -3.9 -m pip install --force-reinstall "https://raw.githubusercontent.com/cobra838/BCML/363cde3fba21dcac9293b3401efbfeb5e1216f22/target/wheels/bcml-3.10.8-cp39-none-win_amd64.whl"
+py -3.14 -m pip install --upgrade -r https://cobra838.github.io/BCML/latest.txt
 ```
 
 - Run BCML from the terminal:
 
 ```bash
-py -3.9 -m bcml
+py -3.14 -m bcml
 ```
 
 Then configure the paths to the WiiU and Switch game files inside BCML.
